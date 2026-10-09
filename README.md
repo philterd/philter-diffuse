@@ -83,6 +83,10 @@ python main.py --mongo-uri "mongodb://localhost:27017/philter" --aggregates --ou
 
 These are document-presence counts (each redaction contributes at most one per type), which matches the differential-privacy `sensitivity = 1` assumption.
 
+## Community
+
+Users and developers are invited to join the [Philterd Slack workspace](https://philterd.ai/slack/) to ask questions, share feedback, and discuss Philter Diffuse and the rest of the Philterd toolkit.
+
 ## License
 
 Copyright 2026 Philterd, LLC. "Philterd", "Phileas", and "Philter" are registered trademarks of Philterd, LLC.
