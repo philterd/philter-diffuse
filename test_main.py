@@ -13,11 +13,21 @@
 #  limitations under the License.
 
 import unittest
+import contextlib
+import http.server
+import io
 import json
 import os
 import csv
+import shutil
+import ssl
+import subprocess
+import tempfile
+import threading
+import urllib.parse
 from unittest.mock import patch, MagicMock
-from main import PhilterDiffuse
+import main
+from main import PhilterDiffuse, PhilterClient, PhilterApiError, PHILTER_API_KEY_ENV
 import mongomock
 
 class TestPhilterDiffuse(unittest.TestCase):
@@ -389,6 +399,352 @@ class TestCLI(unittest.TestCase):
                 pass # Expected
             
             mock_exit.assert_called_once_with(1)
+
+class StubPhilter:
+    """
+    A stand-in for Philter's GET /api/pii-counts that serves canned entries with Philter's paging,
+    filtering, error shape, and X-Request-Id header, and records each request it receives.
+    """
+
+    def __init__(self, entries=None, recording_enabled=True, refusal=None, ssl_context=None):
+        self.entries = entries or []
+        self.recording_enabled = recording_enabled
+        self.refusal = refusal  # (status, {"message", "reason"}) to answer every request with
+        self.requests = []
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                params = {k: v[0] for k, v in urllib.parse.parse_qs(parsed.query).items()}
+                stub.requests.append({"path": parsed.path, "params": params, "headers": dict(self.headers)})
+                if stub.refusal:
+                    status, body = stub.refusal
+                    self._send(status, body)
+                    return
+                matching = [e for e in stub.entries
+                            if ("context" not in params or e["context"] == params["context"])
+                            and ("from" not in params or e["day"] >= params["from"])
+                            and ("to" not in params or e["day"] <= params["to"])]
+                offset, limit = int(params.get("offset", 0)), min(int(params.get("limit", 25)), 100)
+                self._send(200, {"recordingEnabled": stub.recording_enabled,
+                                 "counts": matching[offset:offset + limit], "total": len(matching)})
+
+            def _send(self, status, body):
+                payload = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("X-Request-Id", f"req-{len(stub.requests)}")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        scheme = "http"
+        if ssl_context:
+            self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
+            scheme = "https"
+        self.url = f"{scheme}://127.0.0.1:{self.server.server_address[1]}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _entry(context, day, counts):
+    return {"context": context, "day": day, "counts": counts, "totalDocuments": max(counts.values()),
+            "updatedAt": f"{day}T12:00:00.000Z"}
+
+
+API_KEY = "test-api-key-do-not-print"
+
+
+class TestPhilterApi(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cwd = os.getcwd()
+        os.chdir(self.tmp)  # keep privacy_budget.json and output files out of the checkout
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        shutil.rmtree(self.tmp)
+
+    def run_cli(self, *argv, api_key=API_KEY):
+        """
+        Runs main() with the given arguments and returns (exit_code, stdout, stderr).
+        """
+        env = {k: v for k, v in os.environ.items() if k != PHILTER_API_KEY_ENV}
+        if api_key is not None:
+            env[PHILTER_API_KEY_ENV] = api_key
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        # Any MongoDB connection on the API path is a failure.
+        with patch.dict(os.environ, env, clear=True), \
+                patch('main.MongoClient', side_effect=AssertionError("MongoDB must not be used")), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                main.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_sums_counts_across_every_page(self):
+        # 250 (context, day) entries span three pages of 100.
+        # Philter returns one entry per (context, day), so the keys are distinct.
+        entries = [_entry(f"ctx-{i}", f"2026-09-{(i % 28) + 1:02d}", {"SSN": 1, "PERSON": 2}) for i in range(250)]
+        with StubPhilter(entries) as philter:
+            client = PhilterClient(philter.url, API_KEY)
+            totals = client.fetch_pii_count_aggregates()
+        self.assertEqual(totals, {"SSN": 250, "PERSON": 500})
+        self.assertEqual([r["params"]["offset"] for r in philter.requests], ["0", "100", "200"])
+        self.assertTrue(all(r["params"]["limit"] == "100" for r in philter.requests))
+        self.assertTrue(all(r["path"] == "/api/pii-counts" for r in philter.requests))
+
+    def test_entry_repeated_across_pages_is_counted_once(self):
+        # A day bucket created between page reads shifts the newest-first listing down by one.
+        entries = [_entry(f"ctx-{i:03d}", "2026-09-01", {"SSN": 1}) for i in range(150)]
+        with StubPhilter(entries) as philter:
+            original = philter.server.RequestHandlerClass.do_GET
+
+            def shifting_get(handler):
+                if len(philter.requests) == 1:
+                    philter.entries.insert(0, _entry("new-ctx", "2026-09-02", {"SSN": 1}))
+                original(handler)
+
+            philter.server.RequestHandlerClass.do_GET = shifting_get
+            totals = PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+        # ctx-099 comes back first on the second page and must not be added again.
+        self.assertEqual(totals, {"SSN": 150})
+
+    def test_rejects_a_response_that_is_not_the_listing(self):
+        class NotPhilter(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = b'{"status": "ok"}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), NotPhilter)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with self.assertRaises(PhilterApiError) as raised:
+                PhilterClient(f"http://127.0.0.1:{server.server_address[1]}", API_KEY).fetch_pii_count_aggregates()
+        finally:
+            server.shutdown()
+            server.server_close()
+        # Not mistaken for recording being off.
+        self.assertIn("not Philter's PII counts listing", str(raised.exception))
+
+    def test_api_key_with_a_line_break_is_refused_without_printing_it(self):
+        code, out, err = self.run_cli("--philter-url", "http://127.0.0.1:9", "--output", "out.csv",
+                                      api_key="secret\nkey")
+        self.assertEqual(code, 1)
+        self.assertIn("control character", err)
+        self.assertNotIn("secret", out + err)
+
+    def test_api_key_surrounding_whitespace_is_ignored(self):
+        with StubPhilter([]) as philter:
+            PhilterClient(philter.url, f"  {API_KEY}\n").fetch_pii_count_aggregates()
+        self.assertEqual(philter.requests[0]["headers"]["Authorization"], f"Bearer {API_KEY}")
+
+    def test_budget_key_does_not_depend_on_url_spelling(self):
+        self.assertEqual(PhilterClient("HTTPS://LocalHost:8080/", API_KEY).base_url, "https://localhost:8080")
+
+    def test_sends_bearer_api_key(self):
+        with StubPhilter([]) as philter:
+            PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+        self.assertEqual(philter.requests[0]["headers"]["Authorization"], f"Bearer {API_KEY}")
+
+    def test_passes_context_and_date_range_as_filters(self):
+        entries = [
+            _entry("claims", "2026-08-31", {"SSN": 100}),
+            _entry("claims", "2026-09-01", {"SSN": 1}),
+            _entry("claims", "2026-09-30", {"SSN": 2}),
+            _entry("billing", "2026-09-15", {"SSN": 50}),
+            _entry("claims", "2026-10-01", {"SSN": 100}),
+        ]
+        with StubPhilter(entries) as philter:
+            totals = PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates(
+                context="claims", date_from="2026-09-01", date_to="2026-09-30")
+        self.assertEqual(totals, {"SSN": 3})
+        self.assertEqual(philter.requests[0]["params"],
+                         {"context": "claims", "from": "2026-09-01", "to": "2026-09-30", "offset": "0", "limit": "100"})
+
+    @patch('main.MongoClient', mongomock.MongoClient)
+    def test_matches_the_mongodb_path_for_the_same_data(self):
+        buckets = [
+            ("ctx-a", "2026-05-30", {"SSN": 5, "EMAIL_ADDRESS": 100}),
+            ("ctx-a", "2026-05-31", {"SSN": 3, "PERSON": 9}),
+            ("ctx-b", "2026-05-31", {"SSN": 2}),
+        ]
+        engine = PhilterDiffuse("mongodb://localhost:27017/test_db")
+        engine.db["pii_count_aggregates"].insert_many(
+            [{"context": c, "bucket_start": d, "counts": counts} for c, d, counts in buckets])
+        with StubPhilter([_entry(c, d, counts) for c, d, counts in buckets]) as philter:
+            client = PhilterClient(philter.url, API_KEY)
+            self.assertEqual(client.fetch_pii_count_aggregates(), engine.fetch_pii_count_aggregates())
+            self.assertEqual(client.fetch_pii_count_aggregates(context="ctx-a"),
+                             engine.fetch_pii_count_aggregates(context="ctx-a"))
+
+    def test_cli_privatizes_api_counts_and_tracks_budget_locally(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 40, "PERSON": 90})]) as philter:
+            code, out, err = self.run_cli("--philter-url", philter.url, "--scale", "2.0", "--output", "out.csv")
+        self.assertEqual(code, 0, err)
+        with open("out.csv", newline="") as f:
+            self.assertEqual(sorted(row[0] for row in list(csv.reader(f))[1:]), ["PERSON", "SSN"])
+        with open("privacy_budget.json") as f:
+            self.assertEqual(json.load(f), {f"pii_count_aggregates@{philter.url}": 0.5})
+        self.assertNotIn("deprecated", err)
+
+    def test_cli_never_prints_the_api_key(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            _, out, err = self.run_cli("--philter-url", philter.url, "--output", "out.csv")
+        with StubPhilter(refusal=(403, {"message": "Forbidden.", "reason": "missing_scope"})) as philter:
+            _, out2, err2 = self.run_cli("--philter-url", philter.url, "--output", "out.csv")
+        for text in (out, err, out2, err2):
+            self.assertNotIn(API_KEY, text)
+
+    def test_cli_requires_the_api_key(self):
+        code, _, err = self.run_cli("--philter-url", "https://localhost:8080", "--output", "out.csv", api_key=None)
+        self.assertEqual(code, 1)
+        self.assertIn(PHILTER_API_KEY_ENV, err)
+
+    def test_cli_recording_off_writes_nothing(self):
+        # Counts recorded before recording was turned off are still returned, but the result is
+        # not a reliable picture of the PII Philter has found.
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})], recording_enabled=False) as philter:
+            code, _, err = self.run_cli("--philter-url", philter.url, "--output", "out.csv")
+        self.assertEqual(code, 1)
+        self.assertIn("recording is turned off", err)
+        self.assertIn("No privatized output was written", err)
+        self.assertFalse(os.path.exists("out.csv"))
+        self.assertFalse(os.path.exists("privacy_budget.json"))
+
+    def test_refusals_name_the_reason_and_request_id(self):
+        cases = [
+            (403, {"message": "This API key does not have the 'pii-counts:read' scope.", "reason": "missing_scope"},
+             "pii-counts:read scope"),
+            (403, {"message": "Reading the PII counts requires an administrator.", "reason": "admin_required"},
+             "must be a Philter administrator"),
+            (401, {"message": "Unauthorized.", "reason": "invalid_credentials"}, PHILTER_API_KEY_ENV),
+            (400, {"message": "The from date must not be after the to date.", "reason": "invalid_request"},
+             "The from date must not be after the to date."),
+        ]
+        for status, body, hint in cases:
+            with self.subTest(reason=body["reason"]):
+                with StubPhilter(refusal=(status, body)) as philter:
+                    with self.assertRaises(PhilterApiError) as raised:
+                        PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+                message = str(raised.exception)
+                self.assertIn(f"HTTP {status}, {body['reason']}", message)
+                self.assertIn(hint, message)
+                self.assertIn("Philter request ID: req-1", message)
+
+    def test_cli_refusal_exits_without_output(self):
+        with StubPhilter(refusal=(403, {"message": "Forbidden.", "reason": "admin_required"})) as philter:
+            code, _, err = self.run_cli("--philter-url", philter.url, "--output", "out.csv")
+        self.assertEqual(code, 1)
+        self.assertIn("admin_required", err)
+        self.assertFalse(os.path.exists("out.csv"))
+
+    def test_unreachable_philter(self):
+        with StubPhilter() as philter:
+            url = philter.url  # the port is free once the stub has stopped
+        with self.assertRaises(PhilterApiError) as raised:
+            PhilterClient(url, API_KEY, timeout=5).fetch_pii_count_aggregates()
+        self.assertIn(f"Could not reach Philter at {url}", str(raised.exception))
+
+    def test_philter_without_the_endpoint(self):
+        for body in ({}, {"message": "Not found.", "reason": "not_found"}):
+            with self.subTest(body=body):
+                with StubPhilter(refusal=(404, body)) as philter:
+                    with self.assertRaises(PhilterApiError) as raised:
+                        PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+                self.assertIn("Philter 4.0 or later", str(raised.exception))
+
+    def test_redirects_are_not_followed(self):
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://example.invalid/steal")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with self.assertRaises(PhilterApiError) as raised:
+                PhilterClient(f"http://127.0.0.1:{server.server_address[1]}", API_KEY).fetch_pii_count_aggregates()
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertIn("redirect", str(raised.exception))
+
+    def test_rejects_a_url_without_a_scheme(self):
+        with self.assertRaises(PhilterApiError):
+            PhilterClient("localhost:8080", API_KEY)
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is needed to make a test certificate")
+    def test_https_verifies_and_trusts_a_self_signed_certificate(self):
+        # Like the certificate Philter's Docker image generates: self-signed, not a CA, with
+        # 127.0.0.1 and localhost in its subject alternative name.
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+                        "-keyout", "key.pem", "-out", "cert.pem", "-subj", "/CN=localhost",
+                        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+                        "-addext", "basicConstraints=critical,CA:FALSE",
+                        "-addext", "keyUsage=digitalSignature,keyEncipherment",
+                        "-addext", "extendedKeyUsage=serverAuth"],
+                       check=True, capture_output=True)
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain("cert.pem", "key.pem")
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 7})], ssl_context=server_context) as philter:
+            # Verification is on by default, so the self-signed certificate is refused...
+            with self.assertRaises(PhilterApiError) as raised:
+                PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+            self.assertIn("--philter-ca-cert", str(raised.exception))
+            # ...until it is trusted explicitly.
+            totals = PhilterClient(philter.url, API_KEY, ca_cert="cert.pem").fetch_pii_count_aggregates()
+        self.assertEqual(totals, {"SSN": 7})
+
+    def test_cli_option_validation(self):
+        for argv, expected in [
+            (["--from", "2026-09-01", "--output", "out.csv"], "--from and --to require --philter-url"),
+            (["--philter-ca-cert", "c.pem", "--output", "out.csv"], "--philter-ca-cert requires --philter-url"),
+            (["--philter-url", "https://x", "--input", "c.json", "--output", "out.csv"], "cannot be used together"),
+            (["--philter-url", "https://x", "--from", "09/01/2026", "--output", "out.csv"], "YYYY-MM-DD"),
+            (["--philter-url", "https://x", "--to", "2026-9-1", "--output", "out.csv"], "YYYY-MM-DD"),
+            (["--philter-url", "https://x", "--from", "2026-09-30", "--to", "2026-09-01", "--output", "out.csv"],
+             "--from must not be after --to"),
+        ]:
+            with self.subTest(argv=argv):
+                code, _, err = self.run_cli(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn(expected, err)
+
+    @patch('main.MongoClient', mongomock.MongoClient)
+    def test_mongodb_aggregates_still_work_with_a_deprecation_warning(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            main.main(["--mongo-uri", "mongodb://localhost:27017/test_db", "--aggregates", "--output", "out.csv"])
+        self.assertIn("deprecated", err.getvalue())
+        self.assertIn("--philter-url", err.getvalue())
+        self.assertTrue(os.path.exists("out.csv"))
+
 
 if __name__ == "__main__":
     unittest.main()

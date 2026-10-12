@@ -44,6 +44,7 @@ If you run the same query multiple times on the same data, an attacker could pot
 
 ### Where is the budget stored?
 *   **MongoDB Mode**: The budget is stored in a collection named `privacy_metadata` within your database.
+*   **Philter API Mode** (`--philter-url`): The budget is stored in the local `privacy_budget.json`, keyed by the Philter URL. Nothing is written to Philter's database.
 *   **JSON Mode**: The budget is stored in a local file named `privacy_budget.json` in the working directory.
 
 ### How can I reset the privacy budget?
@@ -63,4 +64,4 @@ This happens when your cumulative privacy loss has exceeded the `--budget-ceilin
 Ensure that your `--mongo-uri` is correct and follows the format `mongodb://[user:pass@]host:port/database`. Also, verify that the MongoDB instance is accessible from the environment where Philter Diffuse is running (check firewalls and network bindings).
 
 ### Can I use Philter Diffuse with other databases besides MongoDB?
-Currently, Philter Diffuse has native support for MongoDB and local JSON files. For other databases, we recommend exporting your PII counts to a JSON format and using the `--input` flag.
+Currently, Philter Diffuse has native support for MongoDB, local JSON files, and Philter's PII Counts API (`--philter-url`, Philter 4.0 or later). For other databases, we recommend exporting your PII counts to a JSON format and using the `--input` flag.

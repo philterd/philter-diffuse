@@ -32,5 +32,5 @@ New to Philter Diffuse? The [Quickstart](quickstart.md) takes you from a clean c
 *   **Safe Output Formatting**:
     *   **CSV Export**: Results are exported to standard CSV format for easy consumption by downstream tools.
     *   **Thresholding**: Automatically suppresses counts below a user-defined threshold (e.g., showing "None" for counts less than 5) to provide an additional layer of protection against re-identification.
-*   **Reads Philter Telemetry Directly**: Privatizes Philter's aggregated, document-presence PII counts (the `pii_count_aggregates` collection) with `--aggregates`, so you can run safe analytics on your own redaction telemetry.
+*   **Reads Philter Telemetry Directly**: Privatizes Philter's aggregated, document-presence PII counts with `--aggregates`, read through Philter's API with an API key (`--philter-url`, Philter 4.0 or later) or from its `pii_count_aggregates` collection (deprecated), so you can run analytics on your own redaction telemetry.
 *   **Dockerized Deployment**: Easily deployable via Docker for consistent and isolated execution environments.

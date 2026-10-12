@@ -113,6 +113,6 @@ Two runs at `--scale 2.0` have spent `0.5 + 0.5 = 1.0`. The default ceiling is `
 
 ## Next steps
 
-- Read counts straight from MongoDB, or from Philter's `pii_count_aggregates`, in [Usage](usage.md).
+- Read counts straight from MongoDB, or Philter's recorded PII counts through its API, in [Usage](usage.md).
 - Understand epsilon, the ceiling, and budget exhaustion in [Privacy Budget Management](privacy-budget.md).
 - Check the release state and maturity in [Project Status](status.md).

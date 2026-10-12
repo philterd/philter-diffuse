@@ -16,10 +16,11 @@ Every time a privatized query is released, a small amount of information about t
 
 ## Persistent Tracking
 
-Philter Diffuse automatically tracks the cumulative epsilon spent for each unique data source (either a MongoDB collection or a JSON file). This tracking is **persistent**, meaning it survives between different executions of the tool.
+Philter Diffuse automatically tracks the cumulative epsilon spent for each unique data source (a MongoDB collection, a JSON file, or a Philter deployment read through its API). This tracking is **persistent**, meaning it survives between different executions of the tool.
 
 *   **MongoDB Mode**: The spent budget is stored in a collection named `privacy_metadata` within the same database as the data.
 *   **JSON Mode**: The spent budget is stored in a local file named `privacy_budget.json` in the working directory.
+*   **Philter API Mode** (`--philter-url`): The spent budget is stored in the same local `privacy_budget.json`, under a key naming the Philter URL, such as `pii_count_aggregates@https://localhost:8080`. Nothing is written to Philter or its database. Every read from that deployment draws on the one budget, whatever `--context`, `--from`, or `--to` it uses, so overlapping reports cannot each spend a fresh budget. If Philter reports that count recording is off, no budget is spent. Moving from `--mongo-uri --aggregates` to `--philter-url` starts a new budget entry: the epsilon already spent is recorded in MongoDB's `privacy_metadata` collection (under the `pii_counts` collection name), not in `privacy_budget.json`. When you move, copy the spent epsilon to the new entry so earlier releases still count against the ceiling.
 
 ## The Budget Ceiling
 
@@ -49,7 +50,7 @@ To assist non-technical auditors, Philter Diffuse provides a qualitative interpr
 ### Resetting the Budget
 If you have refreshed your underlying dataset (e.g., a new month of data) and wish to reset the budget:
 *   **MongoDB**: Delete the document for that collection in the `privacy_metadata` collection.
-*   **JSON**: Edit `privacy_budget.json` and remove the entry for your file, or delete the file entirely.
+*   **JSON or Philter API**: Edit `privacy_budget.json` and remove the entry for your file or Philter URL, or delete the file entirely.
 
 ### Adjusting the Ceiling
 You can increase the ceiling by passing a higher value to the `--budget-ceiling` flag during execution. However, this should only be done after careful consideration of the privacy implications.

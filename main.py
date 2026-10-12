@@ -17,7 +17,12 @@ import json
 import argparse
 import csv
 import os
+import ssl
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
 import opendp.prelude as dp
 from pymongo import MongoClient
 
@@ -28,6 +33,170 @@ __version__ = "0.1.0"
 
 # Enable OpenDP features for 2026 stability
 dp.enable_features("contrib")
+
+# The environment variable holding the Philter API key. It is read from the environment rather
+# than a command-line argument so it does not appear in shell history or process listings.
+PHILTER_API_KEY_ENV = "PHILTER_API_KEY"
+
+
+class PhilterApiError(Exception):
+    """
+    Philter could not be reached, or refused the request. The message is written for a person
+    and never contains the API key.
+    """
+
+
+class CountRecordingDisabled(Exception):
+    """
+    Philter reports that PII count recording (the diffuseCountsEnabled admin setting) is off.
+    """
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """
+    Refuses redirects so the API key in the Authorization header is never sent to another address.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class PhilterClient:
+    """
+    Reads the PII counts Philter records for Philter Diffuse through ``GET /api/pii-counts``
+    (Philter 4.0 and later), so no access to Philter's database is needed.
+    """
+
+    # The largest page the endpoint returns.
+    PAGE_SIZE = 100
+
+    # Hints for the refusals a reader of the PII counts is most likely to hit, keyed by Philter's
+    # stable ``reason`` code.
+    REASON_HINTS = {
+        "invalid_credentials": f"Check that {PHILTER_API_KEY_ENV} holds a valid Philter API key.",
+        "session_expired": f"The key in {PHILTER_API_KEY_ENV} has expired. Use a long-lived API key.",
+        "user_deactivated": "The API key's user is deactivated.",
+        "missing_scope": "The API key needs the pii-counts:read scope.",
+        "admin_required": "The API key's user must be a Philter administrator.",
+    }
+
+    def __init__(self, base_url, api_key, ca_cert=None, timeout=30):
+        api_key = (api_key or "").strip()
+        if not api_key:
+            raise PhilterApiError(f"No Philter API key. Set the {PHILTER_API_KEY_ENV} environment variable.")
+        if any(ord(c) < 0x20 or ord(c) == 0x7f for c in api_key):
+            # Checked here because http.client's own refusal quotes the whole Authorization header.
+            raise PhilterApiError(f"{PHILTER_API_KEY_ENV} contains a control character, such as a line break. Set it to the API key alone.")
+        parsed = urllib.parse.urlparse(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise PhilterApiError(f"The Philter URL must start with https:// or http://, such as https://localhost:8080 (got {base_url}).")
+        # Lowercase the scheme and host so the budget, which is keyed by this URL, is not split by
+        # how the address is typed.
+        self.base_url = parsed._replace(scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower(),
+                                        query="", fragment="").geturl().rstrip("/")
+        self._api_key = api_key
+        self.timeout = timeout
+        handlers = [_NoRedirect()]
+        if parsed.scheme == "https":
+            # Verification stays on. A CA certificate (or Philter's self-signed certificate itself)
+            # can be trusted in addition to the system's certificate authorities.
+            context = ssl.create_default_context()
+            if ca_cert:
+                try:
+                    context.load_verify_locations(cafile=ca_cert)
+                except (OSError, ssl.SSLError) as e:
+                    raise PhilterApiError(f"Could not load the certificate in {ca_cert}: {e}.") from None
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        self._opener = urllib.request.build_opener(*handlers)
+
+    def fetch_pii_count_aggregates(self, context=None, date_from=None, date_to=None):
+        """
+        Sums the counts Philter returns per (context, day) into a flat {pii_type: total} map, reading
+        every page. Filters are applied by Philter. Raises CountRecordingDisabled when Philter says
+        it is not recording counts, so an empty result is never mistaken for no PII.
+        """
+        params = {"limit": self.PAGE_SIZE}
+        if context is not None:
+            params["context"] = context
+        if date_from is not None:
+            params["from"] = date_from
+        if date_to is not None:
+            params["to"] = date_to
+
+        totals = {}
+        seen = set()
+        offset = 0
+        while True:
+            page = self._get("/api/pii-counts", dict(params, offset=offset))
+            if not isinstance(page, dict) or not isinstance(page.get("recordingEnabled"), bool) \
+                    or not isinstance(page.get("counts"), list):
+                raise PhilterApiError(f"The response from {self.base_url}/api/pii-counts is not Philter's PII counts listing. Check that --philter-url points at Philter 4.0 or later.")
+            if not page["recordingEnabled"]:
+                raise CountRecordingDisabled(
+                    "Philter reports that PII count recording is turned off (the diffuseCountsEnabled "
+                    "admin setting), so its counts do not reflect the PII it has found. An administrator "
+                    "can turn it on with Philter's Settings API.")
+            entries = page["counts"]
+            for entry in entries:
+                # The listing is newest first, so a day bucket created while paging shifts the
+                # entries down by one and the last entry of a page comes back on the next. Counting
+                # it twice would let one redaction add two to a type, breaking sensitivity = 1.
+                key = (entry.get("context"), entry.get("day"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                for pii_type, count in (entry.get("counts") or {}).items():
+                    totals[pii_type] = totals.get(pii_type, 0) + int(count)
+            offset += len(entries)
+            if not entries or offset >= int(page.get("total", 0)):
+                return totals
+
+    def _get(self, path, params):
+        url = f"{self.base_url}{path}?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {self._api_key}",
+            "Accept": "application/json",
+        })
+        try:
+            with self._opener.open(request, timeout=self.timeout) as response:
+                body = response.read()
+        except urllib.error.HTTPError as e:
+            raise PhilterApiError(self._describe_refusal(e)) from None
+        except urllib.error.URLError as e:
+            message = f"Could not reach Philter at {self.base_url}: {e.reason}."
+            if isinstance(e.reason, ssl.SSLCertVerificationError):
+                message += " To trust Philter's certificate, pass it (or the CA that issued it) with --philter-ca-cert."
+            raise PhilterApiError(message) from None
+        except (TimeoutError, OSError) as e:
+            raise PhilterApiError(f"Could not reach Philter at {self.base_url}: {e}.") from None
+
+        try:
+            return json.loads(body)
+        except ValueError:
+            raise PhilterApiError(f"Philter at {self.base_url} did not return JSON from {path}. Check that --philter-url points at Philter 4.0 or later.") from None
+
+    def _describe_refusal(self, error):
+        request_id = error.headers.get("X-Request-Id") if error.headers else None
+        if 300 <= error.code < 400:
+            message = (f"Philter at {self.base_url} answered with a redirect (HTTP {error.code}), which is not "
+                       f"followed so the API key is not sent elsewhere. Point --philter-url at the address Philter serves.")
+        else:
+            message, reason = None, None
+            try:
+                body = json.loads(error.read())
+                message, reason = body.get("message"), body.get("reason")
+            except (ValueError, AttributeError):
+                pass
+            message = f"Philter refused the request (HTTP {error.code}" + (f", {reason})" if reason else ")") \
+                + (f": {message}" if message else ".")
+            if error.code == 404:
+                message += f" {self.base_url} may not serve /api/pii-counts: reading counts through the API requires Philter 4.0 or later."
+            elif reason in self.REASON_HINTS:
+                message += f" {self.REASON_HINTS[reason]}"
+        if request_id:
+            message += f" (Philter request ID: {request_id})"
+        return message
+
 
 class PhilterDiffuse:
     """
@@ -241,7 +410,21 @@ class PhilterDiffuse:
         if epsilon <= 5.0: return "MODERATE"
         return "LOW (Testing Only)"
 
-if __name__ == "__main__":
+def _day(value):
+    """
+    An argparse type for a UTC day in Philter's YYYY-MM-DD format.
+    """
+    try:
+        day = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        day = None
+    # strptime accepts 2026-9-1, which Philter refuses, so require the canonical form.
+    if day is None or day.isoformat() != value:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a date in YYYY-MM-DD format, such as 2026-09-01.")
+    return value
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Philter Diffuse: Differential Privacy Engine.")
     parser.add_argument("--version", action="version", version=f"Philter Diffuse {__version__}")
     parser.add_argument("--input", type=str, help="Path to a JSON document containing PII entity counts.")
@@ -250,10 +433,26 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, required=True, help="Path to write the privatized PII counts to a CSV file.")
     parser.add_argument("--threshold", type=int, default=0, help="Counts below this threshold will be output as 'None'.")
     parser.add_argument("--budget-ceiling", type=float, default=10.0, help="The maximum total epsilon allowed per collection.")
-    parser.add_argument("--aggregates", action="store_true", help="Read Philter's aggregated, document-presence PII counts from the pii_count_aggregates collection (written by Philter) instead of counting documents per field.")
+    parser.add_argument("--aggregates", action="store_true", help="Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With --philter-url they are read through Philter's API; otherwise from the pii_count_aggregates collection (deprecated).")
     parser.add_argument("--context", type=str, default=None, help="When reading aggregates, restrict to a single Philter context.")
+    parser.add_argument("--philter-url", type=str, default=None, metavar="URL", help=f"Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as https://localhost:8080, instead of from MongoDB. Implies --aggregates. The API key is read from the {PHILTER_API_KEY_ENV} environment variable.")
+    parser.add_argument("--philter-ca-cert", type=str, default=None, metavar="PEM_FILE", help="With --philter-url, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate.")
+    parser.add_argument("--from", dest="date_from", type=_day, default=None, metavar="YYYY-MM-DD", help="With --philter-url, read only counts for this UTC day or later.")
+    parser.add_argument("--to", dest="date_to", type=_day, default=None, metavar="YYYY-MM-DD", help="With --philter-url, read only counts for this UTC day or earlier.")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.philter_url:
+        if args.input:
+            parser.error("--input and --philter-url cannot be used together.")
+        args.aggregates = True
+    else:
+        if args.date_from or args.date_to:
+            parser.error("--from and --to require --philter-url.")
+        if args.philter_ca_cert:
+            parser.error("--philter-ca-cert requires --philter-url.")
+    if args.date_from and args.date_to and args.date_from > args.date_to:
+        parser.error("--from must not be after --to.")
 
     FIELDS_TO_MONITOR = ["creditcard", "ssn", "age", "zipcode"]
 
@@ -265,13 +464,32 @@ if __name__ == "__main__":
             engine = PhilterDiffuse(collection_name=json_filename)
             print(f"Loading counts from {args.input}...")
             raw_data = engine.load_counts_from_json(args.input)
+        elif args.philter_url:
+            # Read through Philter's API. No MongoDB connection is made: the budget is tracked in
+            # the local budget file, keyed by the Philter deployment the counts came from.
+            try:
+                client = PhilterClient(args.philter_url, os.environ.get(PHILTER_API_KEY_ENV),
+                                       ca_cert=args.philter_ca_cert)
+                engine = PhilterDiffuse(collection_name=f"pii_count_aggregates@{client.base_url}")
+                print(f"Reading PII counts from Philter at {client.base_url}...")
+                raw_data = client.fetch_pii_count_aggregates(context=args.context, date_from=args.date_from,
+                                                             date_to=args.date_to)
+            except CountRecordingDisabled as e:
+                print(f"Error: {e} No privatized output was written.", file=sys.stderr)
+                sys.exit(1)
+            except PhilterApiError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
         else:
             # Initialize Engine with MongoDB
             try:
                 engine = PhilterDiffuse(args.mongo_uri)
                 # 1. Fetch raw data
                 if args.aggregates:
-                    # Sum Philter's document-presence aggregates (the recommended source).
+                    print(f"WARNING: Reading pii_count_aggregates from MongoDB with --mongo-uri is deprecated and "
+                          f"will be removed in a future release. Read the counts through Philter's API instead "
+                          f"with --philter-url and the {PHILTER_API_KEY_ENV} environment variable (Philter 4.0 or later).",
+                          file=sys.stderr)
                     raw_data = engine.fetch_pii_count_aggregates(context=args.context)
                 else:
                     raw_data = engine.fetch_pii_counts(FIELDS_TO_MONITOR)
@@ -289,7 +507,12 @@ if __name__ == "__main__":
         engine.generate_audit_report(raw_data, private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold, budget_exhausted=exhausted)
 
     except SystemExit:
-        # Expected exit from sys.exit(1)
-        pass
+        # Propagate the exit status so a failed run does not look like a successful one.
+        raise
     except Exception as e:
         print(f"Error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
