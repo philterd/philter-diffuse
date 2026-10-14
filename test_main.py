@@ -14,6 +14,7 @@
 
 import unittest
 import contextlib
+import hashlib
 import http.server
 import io
 import json
@@ -459,8 +460,9 @@ class StubPhilter:
         self.server.server_close()
 
 
-def _entry(context, day, counts):
-    return {"context": context, "day": day, "counts": counts, "totalDocuments": max(counts.values()),
+def _entry(context, day, counts, owner="jordan"):
+    return {"id": hashlib.sha256(f"{owner}|{context}|{day}".encode()).hexdigest()[:32], "owner": owner,
+            "context": context, "day": day, "counts": counts, "totalDocuments": max(counts.values()),
             "updatedAt": f"{day}T12:00:00.000Z"}
 
 
@@ -524,6 +526,25 @@ class TestPhilterApi(unittest.TestCase):
             totals = PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
         # ctx-099 comes back first on the second page and must not be added again.
         self.assertEqual(totals, {"SSN": 150})
+
+    def test_two_users_contexts_of_one_name_are_both_counted(self):
+        # Philter keeps each user's counts apart, and may leave another user's context unnamed.
+        # With cross-user access both are named "default"; without it, another user's comes unnamed.
+        mine = _entry("default", "2026-09-01", {"SSN": 3}, owner="jordan")
+        named = _entry("default", "2026-09-01", {"SSN": 5}, owner="riley")
+        unnamed = _entry("default", "2026-09-01", {"SSN": 7}, owner="sam")
+        del unnamed["owner"], unnamed["context"]
+        with StubPhilter([mine, named, unnamed]) as philter:
+            totals = PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+        self.assertEqual(totals, {"SSN": 15})
+
+    def test_an_entry_without_an_id_is_refused(self):
+        entry = _entry("default", "2026-09-01", {"SSN": 1})
+        del entry["id"]
+        with StubPhilter([entry]) as philter:
+            with self.assertRaises(PhilterApiError) as raised:
+                PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
+        self.assertIn("has no id", str(raised.exception))
 
     def test_rejects_a_response_that_is_not_the_listing(self):
         class NotPhilter(http.server.BaseHTTPRequestHandler):

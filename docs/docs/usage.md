@@ -48,7 +48,7 @@ The JSON file should be a simple flat object where keys represent the PII type a
 | `--threshold` | Results with a privatized count below this value will be masked as `None` in the output. | `0` |
 | `--budget-ceiling` | The maximum cumulative privacy budget (epsilon) allowed for a single source. | `10.0` |
 | `--aggregates` | Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | off |
-| `--context` | When using `--aggregates`, restrict to a single Philter context. | all contexts |
+| `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | `None` |
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | `None` |
 | `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. | `None` |
@@ -59,7 +59,7 @@ Run `python main.py --help` to see this list from the tool itself.
 
 ### 3. Reading Philter's PII counts (`--aggregates`)
 
-When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts: one entry per `(context, day)`, each holding a map of `{pii_type: number-of-documents-containing-it}`. Instead of counting documents field by field, point Philter Diffuse at those counts directly. Philter Diffuse sums the entries into a single `{pii_type: total}` map and privatizes that. Because each redaction contributes at most one to any type's count (document presence), summing across entries preserves the differential-privacy `sensitivity = 1` assumption the guarantee relies on.
+When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts: one entry per user's `(context, day)`, each holding a map of `{pii_type: number-of-documents-containing-it}`. Instead of counting documents field by field, point Philter Diffuse at those counts directly. Philter Diffuse sums the entries into a single `{pii_type: total}` map and privatizes that. Because each redaction contributes at most one to any type's count (document presence), summing across entries preserves the differential-privacy `sensitivity = 1` assumption the guarantee relies on.
 
 #### Through Philter's API (recommended)
 

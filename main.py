@@ -141,7 +141,11 @@ class PhilterClient:
                 # The listing is newest first, so a day bucket created while paging shifts the
                 # entries down by one and the last entry of a page comes back on the next. Counting
                 # it twice would let one redaction add two to a type, breaking sensitivity = 1.
-                key = (entry.get("context"), entry.get("day"))
+                # Entries are told apart by id: two users' contexts of one name on one day are
+                # separate entries, and another user's may come without its context name.
+                key = entry.get("id")
+                if not isinstance(key, str) or not key:
+                    raise PhilterApiError(f"An entry from {self.base_url}/api/pii-counts has no id. Philter Diffuse needs a Philter release that returns one.")
                 if key in seen:
                     continue
                 seen.add(key)

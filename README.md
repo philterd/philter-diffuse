@@ -70,8 +70,8 @@ If the `--budget-ceiling` is reached, the tool will notify the user, apply infin
 | `--output` | Path to write the privatized PII counts to a CSV file. | **Required** | None |
 | `--threshold` | Counts below this threshold will be output as `None`. | Optional | `0` |
 | `--budget-ceiling` | The maximum total epsilon allowed per collection. | Optional | `10.0` |
-| `--aggregates` | Read [Philter's](https://www.github.com/philterd/philter) aggregated, document-presence PII counts (summing the per-`(context, day)` count buckets that Philter records) instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | Optional | off |
-| `--context` | When using `--aggregates`, restrict to a single Philter context. | Optional | all contexts |
+| `--aggregates` | Read [Philter's](https://www.github.com/philterd/philter) aggregated, document-presence PII counts (summing the count buckets that Philter records per user's `(context, day)`) instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | Optional | off |
+| `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | Optional | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | Optional | None |
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | Optional | None |
 | `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. | Optional | None |
@@ -79,7 +79,7 @@ If the `--budget-ceiling` is reached, the tool will notify the user, apply infin
 
 ### Reading Philter's PII counts
 
-When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per `(context, day)`. These are document-presence counts (each redaction contributes at most one per type), which matches the differential-privacy `sensitivity = 1` assumption.
+When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per user's `(context, day)`. These are document-presence counts (each redaction contributes at most one per type), which matches the differential-privacy `sensitivity = 1` assumption.
 
 #### Through Philter's API (recommended, Philter 4.0 or later)
 
@@ -91,7 +91,7 @@ python main.py --philter-url https://localhost:8080 --aggregates --output privat
 ```
 
 * The key must hold the `pii-counts:read` scope, and its user must be a Philter **administrator**, because the counts cover the whole deployment. Philter records each read in its audit log.
-* Narrow the counts with `--context <name>` and with `--from` and `--to` (UTC days, `YYYY-MM-DD`, both inclusive). Philter applies these filters, and Philter Diffuse reads every page of the result.
+* Narrow the counts with `--context <name>` and with `--from` and `--to` (UTC days, `YYYY-MM-DD`, both inclusive). Philter applies these filters, and Philter Diffuse reads every page of the result. Philter keeps each user's counts apart; without `--context`, Philter Diffuse sums every user's. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's.
 * If Philter reports that count recording is turned off, Philter Diffuse says so and exits without writing privatized output or spending privacy budget, rather than privatizing an empty or partial result as if no PII had been found.
 * If Philter refuses the request (missing scope, not an administrator, invalid key) or cannot be reached, Philter Diffuse prints the reason and Philter's request ID when one is returned, so the request can be found in Philter's audit log.
 * Certificates are verified. Philter's Docker image generates a self-signed certificate; to trust it, export it and pass it with `--philter-ca-cert philter.pem` rather than turning verification off. Redirects are not followed, so the API key is only ever sent to the URL you give.
