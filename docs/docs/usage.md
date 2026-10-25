@@ -59,7 +59,7 @@ Run `python main.py --help` to see this list from the tool itself.
 
 ### 3. Reading Philter's PII counts (`--aggregates`)
 
-When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts: one entry per user's `(context, day)`, each holding a map of `{pii_type: number-of-documents-containing-it}`. Instead of counting documents field by field, point Philter Diffuse at those counts directly. Philter Diffuse sums the entries into a single `{pii_type: total}` map and privatizes that. Because each redaction contributes at most one to any type's count (document presence), summing across entries preserves the differential-privacy `sensitivity = 1` assumption the guarantee relies on.
+When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts: one entry per user's `(context, day)`, each holding a map of `{pii_type: number-of-documents-containing-it}`. Instead of counting documents field by field, point Philter Diffuse at those counts directly. Philter Diffuse sums the entries into a single `{pii_type: total}` map and privatizes that. Because each redaction contributes at most one to any type's count (document presence), summing across entries keeps each count's sensitivity at 1. A document can contain several types, so a query's epsilon is the number of types released divided by `--scale`.
 
 #### Through Philter's API (recommended)
 
@@ -142,7 +142,7 @@ creditcard,None
 A human-readable report is printed to the standard output (`stdout`) summarizing the execution and the privacy guarantees applied.
 
 **Key Report Sections:**
-*   **Privacy Loss (Epsilon)**: The specific amount of privacy budget consumed by this particular execution (calculated as `1 / scale`).
+*   **Privacy Loss (Epsilon)**: The specific amount of privacy budget consumed by this particular execution (the number of PII types released divided by `--scale`).
 *   **Protection Strength**: A qualitative assessment of the privacy level (e.g., "HIGH" or "MODERATE").
 *   **Influence Limit**: A mathematical multiplier representing the maximum change an individual record can have on the output probability.
 *   **Raw vs. Private Table**: A side-by-side comparison for internal auditing (only visible to the user running the tool).
@@ -156,5 +156,5 @@ python main.py --input pii_counts.json --output private.csv --scale 5.0 --thresh
 ```
 
 In this example:
-1.  **Scale 5.0**: Adds significantly more noise than the default (2.0), resulting in a lower epsilon (0.2).
+1.  **Scale 5.0**: Adds significantly more noise than the default (2.0), resulting in a lower epsilon: 0.2 per PII type, so 0.8 for the four types in the example above.
 2.  **Threshold 10**: Any PII count that, after adding noise, is less than 10 will be completely masked as `None`.

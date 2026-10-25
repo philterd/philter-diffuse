@@ -8,8 +8,8 @@ In Philter Diffuse, $\epsilon$ is a measure of the information leak allowed for 
 
 *   **Calculation**: For the Discrete Laplace mechanism used here, epsilon for a single query is calculated as:
     $$\epsilon = \frac{\Delta f}{\text{scale}}$$
-    Where $\Delta f$ is the **sensitivity** (always 1 for individual counts) and **scale** is the noise parameter provided by the user via `--scale`.
-*   **Default**: With a default scale of `2.0`, each query consumes $\epsilon = 1/2 = 0.5$.
+    Where $\Delta f$ is the **sensitivity** and **scale** is the noise parameter provided by the user via `--scale`. One document adds at most one to each PII type's count, but it can add to every type at once, so the sensitivity of a query is the number of PII types it releases. OpenDP computes epsilon from it.
+*   **Default**: With the default scale of `2.0`, a query releasing 4 PII types consumes $\epsilon = 4/2 = 2.0$. To spend less per query, raise `--scale`: epsilon falls in proportion.
 
 ### Why do we need a budget?
 Every time a privatized query is released, a small amount of information about the underlying data is leaked. If an attacker can query the same dataset multiple times with different noise, they could potentially average out the noise to reconstruct the original values. A privacy budget places a hard limit on this cumulative leakage.

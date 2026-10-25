@@ -24,7 +24,7 @@ Yes. Philter Diffuse is designed to complement [Philter](https://www.github.com/
 ## Technical & Mathematical Questions
 
 ### What is the "Epsilon" ($\epsilon$) value?
-Epsilon is a measure of "privacy loss." A smaller epsilon (e.g., 0.1) means more privacy but less accuracy because more noise is added. A larger epsilon (e.g., 5.0) means less privacy but higher accuracy. Philter Diffuse calculates epsilon as $1 / \text{scale}$.
+Epsilon is a measure of "privacy loss." A smaller epsilon (e.g., 0.1) means more privacy but less accuracy because more noise is added. A larger epsilon (e.g., 5.0) means less privacy but higher accuracy. Philter Diffuse calculates epsilon as $n / \text{scale}$, where $n$ is the number of PII types released.
 
 ### Why are some counts returned as "None"?
 When you set a `--threshold` (e.g., `--threshold 10`), any privatized count that falls below that value is masked as `None`. This prevents the leakage of information from very small cohorts, which are often the most vulnerable to re-identification.
@@ -33,7 +33,7 @@ When you set a `--threshold` (e.g., `--threshold 10`), any privatized count that
 Mathematically, Laplace noise can be negative and could result in a negative count. However, Philter Diffuse automatically clips all privatized counts to a minimum of 0 to ensure the output is realistic for count-based data.
 
 ### What is "Sensitivity"?
-In the context of Philter Diffuse, sensitivity is set to 1. This is because the tool is designed for counting individual occurrences. Adding or removing a single record can change the count by at most 1.
+Sensitivity is how much adding or removing one document can change the released counts. Philter Diffuse counts documents, so one document changes any one count by at most 1. A document can contain several PII types, though, and so change several counts at once: the sensitivity of a query is the number of PII types it releases.
 
 ---
 

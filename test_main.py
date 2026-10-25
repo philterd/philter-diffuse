@@ -167,7 +167,8 @@ class TestPhilterDiffuse(unittest.TestCase):
         scale = 1.0
         private_results, epsilon, exhausted = self.engine.privatize_counts(raw_counts, scale=scale)
         
-        self.assertEqual(epsilon, 1.0 / scale)
+        # Two types: one document can change both counts.
+        self.assertEqual(epsilon, 2.0 / scale)
         self.assertFalse(exhausted)
         self.assertIn("ssn", private_results)
         self.assertIn("age", private_results)
@@ -175,6 +176,16 @@ class TestPhilterDiffuse(unittest.TestCase):
         self.assertIsInstance(private_results["age"], int)
         # Verify no negative numbers are returned
         self.assertTrue(all(v >= 0 for v in private_results.values()))
+
+    def test_epsilon_counts_every_type_one_document_can_change(self):
+        # One redaction adds one to each type it found, so a release of n counts has an L1
+        # sensitivity of n and spends n / scale, not 1 / scale.
+        for n in (1, 2, 5, 10):
+            with self.subTest(types=n):
+                raw_counts = {f"type-{i}": 100 for i in range(n)}
+                _, epsilon, _ = PhilterDiffuse(collection_name=f"types-{n}.json").privatize_counts(
+                    raw_counts, scale=2.0, budget_ceiling=100.0)
+                self.assertEqual(epsilon, n / 2.0)
 
     def test_privatize_counts_negative_clamping(self):
         # Force the measurement to return a negative number to test clamping
@@ -185,7 +196,8 @@ class TestPhilterDiffuse(unittest.TestCase):
         # Since it's created inside the method, we can patch opendp.measurements.make_laplace
         with patch('main.dp.m.make_laplace') as mock_make:
             mock_measurement = MagicMock()
-            mock_measurement.return_value = -5
+            mock_measurement.return_value = [-5]
+            mock_measurement.map.return_value = 1.0 / scale
             mock_make.return_value = mock_measurement
             
             private_results, _, _ = self.engine.privatize_counts(raw_counts, scale=scale)
@@ -239,7 +251,8 @@ class TestPhilterDiffuse(unittest.TestCase):
         # Empty counts
         res, eps, exh = self.engine.privatize_counts({}, scale=1.0)
         self.assertEqual(res, {})
-        self.assertEqual(eps, 1.0)
+        # Nothing is released, so nothing is spent.
+        self.assertEqual(eps, 0.0)
         self.assertFalse(exh)
 
         # Scale zero or negative
@@ -312,7 +325,7 @@ class TestCLI(unittest.TestCase):
                 self.assertEqual(loaded_data, test_data)
                 
                 private_data, epsilon, exhausted = engine.privatize_counts(loaded_data, scale=args.scale)
-                self.assertEqual(epsilon, 1.0 / 1.0)
+                self.assertEqual(epsilon, 2.0 / 1.0)
                 self.assertFalse(exhausted)
                 self.assertIn("ssn", private_data)
 
@@ -627,7 +640,7 @@ class TestPhilterApi(unittest.TestCase):
         with open("out.csv", newline="") as f:
             self.assertEqual(sorted(row[0] for row in list(csv.reader(f))[1:]), ["PERSON", "SSN"])
         with open("privacy_budget.json") as f:
-            self.assertEqual(json.load(f), {f"pii_count_aggregates@{philter.url}": 0.5})
+            self.assertEqual(json.load(f), {f"pii_count_aggregates@{philter.url}": 1.0})
         self.assertNotIn("deprecated", err)
 
     def test_cli_never_prints_the_api_key(self):

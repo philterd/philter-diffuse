@@ -6,11 +6,11 @@ It uses the Discrete Laplace mechanism to privatize PII counts and generates com
 
 Designed to be used with [Phileas](https://www.github.com/philterd/phileas) and [Philter](https://www.github.com/philterd/philter).
 
-View the documentation at https://philterd.github.io/philterdiffuse. New users should start with the [Quickstart](https://philterd.github.io/philterdiffuse/quickstart/).
+View the documentation at https://philterd.github.io/philter-diffuse. New users should start with the [Quickstart](https://philterd.github.io/philter-diffuse/quickstart/).
 
 ## Project Status
 
-Philter Diffuse is early-access software at version `0.1.0`. The differential-privacy mechanism, budget accounting, and CLI are usable and tested, but as a `0.x` release the interface may change before a stable `1.0`. See [Project Status](https://philterd.github.io/philterdiffuse/status/) for the maturity checklist and roadmap. Check your checkout with `python main.py --version`.
+Philter Diffuse is early-access software at version `0.1.0`. The differential-privacy mechanism, budget accounting, and CLI are usable and tested, but as a `0.x` release the interface may change before a stable `1.0`. See [Project Status](https://philterd.github.io/philter-diffuse/status/) for the maturity checklist and roadmap. Check your checkout with `python main.py --version`.
 
 ## Installation
 
@@ -52,7 +52,7 @@ pip install -r requirements.txt
    ```bash
    ./run-docker.sh
    ```
-   This script builds the image and runs a sample privatization task using volume mounts. The image's entrypoint is `main.py` and it runs in `/data`, so mount a directory there: it holds the input, the output, and `privacy_budget.json`, which is otherwise lost when the container exits. See [Installation](https://philterd.github.io/philterdiffuse/installation/) for reading counts from a Philter container.
+   This script builds the image and runs a sample privatization task using volume mounts. The image's entrypoint is `main.py` and it runs in `/data`, so mount a directory there: it holds the input, the output, and `privacy_budget.json`, which is otherwise lost when the container exits. See [Installation](https://philterd.github.io/philter-diffuse/installation/) for reading counts from a Philter container.
 
 ## Privacy Budget Management
 
@@ -79,7 +79,7 @@ If the `--budget-ceiling` is reached, the tool will notify the user, apply infin
 
 ### Reading Philter's PII counts
 
-When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per user's `(context, day)`. These are document-presence counts (each redaction contributes at most one per type), which matches the differential-privacy `sensitivity = 1` assumption.
+When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per user's `(context, day)`. These are document-presence counts: each redaction contributes at most one per type, so each count has a sensitivity of 1. A redaction can contribute to several types, so a query is charged one `1 / scale` per type it releases.
 
 #### Through Philter's API (recommended, Philter 4.0 or later)
 

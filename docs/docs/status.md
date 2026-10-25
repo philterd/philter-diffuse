@@ -22,7 +22,7 @@ The current state of the things a developer-facing tool needs before it is "done
 | :--- | :--- | :--- |
 | **Tests** | Done | `test_main.py` exercises privatization, budget tracking, thresholding, JSON/Mongo ingestion, the aggregates reader, and reading counts from Philter's API against a stubbed Philter; CI runs `pytest` on every push and pull request (`.github/workflows/tests.yml`). |
 | **Examples** | Done | `example.sh` (local JSON run) and `run-docker.sh` (containerized run) are runnable end to end; the [Quickstart](quickstart.md) is a worked walkthrough. |
-| **Docs** | Done | Install, usage, CLI options, privacy-budget management, quickstart, and FAQ are published to <https://philterd.github.io/philterdiffuse/> and rebuilt on every push (`.github/workflows/docs.yml`). |
+| **Docs** | Done | Install, usage, CLI options, privacy-budget management, quickstart, and FAQ are published to <https://philterd.github.io/philter-diffuse/> and rebuilt on every push (`.github/workflows/docs.yml`). |
 | **Release artifact** | Not started | No git tag, GitHub release, or PyPI package yet. The tool runs from a checkout via `python main.py`. Tagging `0.1.0` and cutting a matching GitHub release is the next step toward `1.0`. |
 
 When the checklist items change, update this table and the `__version__` in `main.py` together.

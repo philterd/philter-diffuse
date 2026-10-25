@@ -15,8 +15,8 @@ Before installing Philter Diffuse, ensure your system meets the following requir
 
 1.  **Clone the Repository** (if applicable):
     ```bash
-    git clone https://github.com/philterd/philterdiffuse.git
-    cd philterdiffuse
+    git clone https://github.com/philterd/philter-diffuse.git
+    cd philter-diffuse
     ```
 
 2.  **Create a Virtual Environment** (Recommended):

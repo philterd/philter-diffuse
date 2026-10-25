@@ -5,8 +5,8 @@ This walkthrough takes you from a clean checkout to a privatized CSV and a priva
 ## 1. Install
 
 ```bash
-git clone https://github.com/philterd/philterdiffuse.git
-cd philterdiffuse
+git clone https://github.com/philterd/philter-diffuse.git
+cd philter-diffuse
 python -m venv venv
 source venv/bin/activate            # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -20,7 +20,7 @@ python main.py --version
 
 ## 2. Create some input counts
 
-Philter Diffuse privatizes counts of PII entities. These usually come from your Philter or Phield telemetry, but for this quickstart create a small JSON file by hand. Save the following as `pii_counts.json`:
+Philter Diffuse privatizes counts of PII entities. These usually come from the PII counts Philter records, but for this quickstart create a small JSON file by hand. Save the following as `pii_counts.json`:
 
 ```json
 {
@@ -48,7 +48,7 @@ What each flag does:
 
 - `--input` reads the raw counts from your JSON file.
 - `--output` writes the differentially private counts to a CSV.
-- `--scale 2.0` sets the noise level. Epsilon is `1 / scale`, so this query spends `0.5`.
+- `--scale 2.0` sets the noise level. Each PII type in the input costs `1 / scale`, because one document can add to every type at once, so these five types spend `5 / 2.0 = 2.5`.
 - `--threshold 5` masks any privatized count below 5 as `None`, protecting small cohorts.
 
 ## 4. Read the audit report
@@ -59,24 +59,24 @@ The tool prints a privacy audit report to the console. Because the noise is rand
 ========================================
 PRIVACY AUDIT REPORT
 ========================================
-Privacy Loss (Epsilon): 0.5000
-Protection Strength:   HIGH
-Influence Limit:      e^0.50 (1.65x)
+Privacy Loss (Epsilon): 2.5000
+Protection Strength:   MODERATE
+Influence Limit:      e^2.50 (12.18x)
 Output File:          privatized_counts.csv
 Count Threshold:      5
 ----------------------------------------
 PII Type        | Raw      | Private
 ----------------------------------------
-ssn             | 8        | 7
-creditcard      | 15       | 16
-age             | 120      | 118
-zipcode         | 45       | 47
+ssn             | 8        | 9
+creditcard      | 15       | 14
+age             | 120      | 122
+zipcode         | 45       | 49
 date            | 3        | None
 ----------------------------------------
 ```
 
 - **Privacy Loss (Epsilon)** is the budget spent by this query.
-- **Protection Strength** is a plain-language reading of epsilon (`HIGH` here).
+- **Protection Strength** is a plain-language reading of epsilon (`MODERATE` here). Raise `--scale` for stronger protection: `--scale 10` spends `0.5` on these five types.
 - The **Raw vs. Private** table is for your eyes only. Only the private column is safe to share.
 - `date` shows `None` because its privatized count fell below the threshold of 5.
 
@@ -88,10 +88,10 @@ cat privatized_counts.csv
 
 ```csv
 PII Type,Private Count
-ssn,7
-creditcard,16
-age,118
-zipcode,47
+ssn,9
+creditcard,14
+age,122
+zipcode,49
 date,None
 ```
 
@@ -106,10 +106,10 @@ cat privacy_budget.json
 ```
 
 ```json
-{"pii_counts.json": 1.0}
+{"pii_counts.json": 5.0}
 ```
 
-Two runs at `--scale 2.0` have spent `0.5 + 0.5 = 1.0`. The default ceiling is `10.0`; once cumulative epsilon would cross it, Philter Diffuse stops releasing accurate numbers and applies infinite noise. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
+Two runs at `--scale 2.0` have spent `2.5 + 2.5 = 5.0`. The default ceiling is `10.0`; once cumulative epsilon would cross it, Philter Diffuse stops releasing accurate numbers and applies infinite noise. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
 
 ## Next steps
 

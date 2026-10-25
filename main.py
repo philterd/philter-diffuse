@@ -232,7 +232,7 @@ class PhilterDiffuse:
             self.client = None
             self.collection_name = collection_name or "json_file" # Default label for JSON mode
             self.budget_file = "privacy_budget.json"
-        self.sensitivity = 1  # Standard for count-based individual records
+        self.sensitivity = 1  # How much one document can change any one count
 
     def _get_spent_epsilon(self):
         """
@@ -338,9 +338,18 @@ class PhilterDiffuse:
         # 1. Calculate Epsilon for this query
         if scale <= 0:
             raise ValueError("Scale must be a positive number.")
-            
-        epsilon_this_query = self.sensitivity / scale
-        
+
+        # One document adds at most one to each type's count, but it can add to every type at once,
+        # so the counts released together have an L1 sensitivity of one per type. Charging a single
+        # count's epsilon would understate the loss by up to the number of types.
+        keys = list(raw_counts)
+        measurement = dp.m.make_laplace(
+            input_domain=dp.vector_domain(dp.atom_domain(T=int)),
+            input_metric=dp.l1_distance(T=int),
+            scale=float(scale)
+        )
+        epsilon_this_query = measurement.map(d_in=self.sensitivity * len(keys))
+
         # 2. Check Budget
         spent_epsilon = self._get_spent_epsilon()
         budget_exhausted = False
@@ -353,21 +362,16 @@ class PhilterDiffuse:
             budget_exhausted = True
             print(f"WARNING: Budget ceiling of {budget_ceiling} exceeded. Infinite noise applied.")
 
-        # 3. Define the Measurement
+        # 3. Apply the Measurement
         if math.isinf(scale):
-            # If scale is infinite, all results are just noise, or we can just return 0 
+            # If scale is infinite, all results are just noise, or we can just return 0
             # but usually infinite noise means we don't return meaningful data.
-            # OpenDP make_laplace might handle inf scale, but let's be safe.
             private_results = {k: 0 for k in raw_counts}
         else:
-            measurement = dp.m.make_laplace(
-                input_domain=dp.atom_domain(T=int),
-                input_metric=dp.absolute_distance(T=int),
-                scale=float(scale)
-            )
             # 4. Privatize and ensure no negative numbers
             # Cast counts to int for OpenDP compatibility (i32)
-            private_results = {k: max(0, measurement(int(v))) for k, v in raw_counts.items()}
+            noisy = measurement([int(raw_counts[k]) for k in keys])
+            private_results = {k: max(0, v) for k, v in zip(keys, noisy)}
 
         # 5. Update Budget if it was a valid query
         if not math.isinf(scale):
