@@ -5,10 +5,10 @@ This page addresses common questions and concerns regarding Philter Diffuse, its
 ## General Questions
 
 ### What is Philter Diffuse?
-Philter Diffuse is a specialized utility designed to add an extra layer of privacy to PII (Personally Identifiable Information) count aggregations. By using the Discrete Laplace mechanism provided by the OpenDP library, it injects mathematical noise into raw counts, ensuring that individual data points cannot be reconstructed from the aggregate output.
+Philter Diffuse is a specialized utility designed to add an extra layer of privacy to PII (Personally Identifiable Information) count aggregations. By using the Discrete Laplace mechanism provided by the OpenDP library, it injects mathematical noise into raw counts, bounding how much the aggregate output reveals about any one document.
 
 ### When would I use Philter Diffuse?
-You would use Philter Diffuse when you need to report or share statistics based on sensitive PII (Personally Identifiable Information) but must guarantee that those statistics cannot be used to re-identify any individual in the dataset. This is common in healthcare (HIPAA compliance), financial reporting, and academic research where aggregate data must be publicly released or shared with third parties.
+You would use Philter Diffuse when you need to report or share statistics based on sensitive PII (Personally Identifiable Information) but need to limit what those statistics reveal about any individual in the dataset. This is common in healthcare, financial reporting, and academic research where aggregate data must be publicly released or shared with third parties.
 
 ### How does it differ from "standard" anonymization?
 Traditional anonymization (like k-anonymity) often fails against linkage attacks or background knowledge. Differential privacy provides a rigorous mathematical guarantee that the presence or absence of a single individual in the dataset will not significantly change the outcome of the analysis.
@@ -17,7 +17,7 @@ Traditional anonymization (like k-anonymity) often fails against linkage attacks
 Yes. Commercial support for Philter Diffuse is available through [Philterd, LLC](https://www.philterd.ai). We offer enterprise-grade service level agreements (SLAs), custom integration assistance, and priority bug fixes for our entire ecosystem of PII de-identification tools.
 
 ### Is Philter Diffuse part of a larger ecosystem?
-Yes. Philter Diffuse is designed to complement [Philter](https://www.github.com/philterd/philter) (the PII de-identification engine) and [Phileas](https://www.github.com/philterd/phileas) (the enterprise-grade PII management platform). While Philter removes PII from text, Philter Diffuse ensures that the *statistics* derived from that PII remain private.
+Yes. Philter Diffuse is designed to complement [Philter](https://www.github.com/philterd/philter) (the PII de-identification engine) and [Phileas](https://www.github.com/philterd/phileas) (the PII redaction library underneath Philter). While Philter removes PII from text, Philter Diffuse ensures that the *statistics* derived from that PII remain private.
 
 ---
 

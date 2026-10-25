@@ -36,9 +36,9 @@ If a requested query would cause the total spent epsilon to exceed the ceiling, 
 
 ## Interpreting Protection Strength
 
-To assist non-technical auditors, Philter Diffuse provides a qualitative interpretation of the cumulative privacy loss:
+To assist non-technical auditors, Philter Diffuse provides a qualitative interpretation of the privacy loss of each query (not the cumulative total, which is in the budget store):
 
-| Cumulative Epsilon ($\epsilon$) | Protection Strength | Description |
+| Query Epsilon ($\epsilon$) | Protection Strength | Description |
 | :--- | :--- | :--- |
 | $\epsilon \leq 0.1$ | **EXTREME** | Highest level of protection; suitable for extremely sensitive personal data. |
 | $0.1 < \epsilon \leq 1.0$ | **HIGH** | Strong protection; standard for most production use cases. |

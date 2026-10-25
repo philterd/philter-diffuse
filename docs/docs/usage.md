@@ -6,7 +6,7 @@ Philter Diffuse is a command-line tool designed to process PII counts and apply 
 
 ### 1. MongoDB Mode (Default)
 
-In this mode, Philter Diffuse connects to a MongoDB instance, queries specified collections for PII entity occurrences, and privatizes the resulting counts.
+In this mode, Philter Diffuse connects to a MongoDB instance, counts the documents in the `pii_counts` collection of the database named in the URI that have each of the monitored fields, and privatizes those counts. This mode is not tied to Philter; to read Philter's counts, see [Reading Philter's PII counts](#3-reading-philters-pii-counts-aggregates).
 
 **Example Command:**
 ```bash
@@ -14,7 +14,7 @@ python main.py --mongo-uri "mongodb://localhost:27017/analytics_db" --output res
 ```
 
 *   **Behavior**: It connects to the `analytics_db` on `localhost`.
-*   **Monitored Fields**: By default, the tool counts occurrences of the following fields in the database: `creditcard`, `ssn`, `age`, and `zipcode`.
+*   **Monitored Fields**: The tool counts documents containing each of these fields: `creditcard`, `ssn`, `age`, and `zipcode`. The fields and the collection are fixed.
 
 ### 2. JSON Mode
 
@@ -126,17 +126,22 @@ Restrict to one Philter context with `--context`. This path is **deprecated**: i
 Philter Diffuse provides two forms of output for every execution:
 
 ### 1. Privatized CSV File
-The file specified by the `--output` flag will contain a list of PII types and their corresponding privatized counts.
+The file specified by the `--output` flag will contain a list of PII types and their corresponding privatized counts. For the JSON example above, run with `--threshold 60`:
+
+```bash
+python main.py --input data/pii_counts.json --output results.csv --threshold 60
+```
 
 **Example CSV Content:**
 ```csv
 PII Type,Private Count
-ssn,107
-age,448
-zipcode,125
+ssn,108
+age,451
+zipcode,122
 creditcard,None
+email,213
 ```
-*Note: `creditcard` is "None" because its privatized count fell below the configured threshold.*
+*Note: `creditcard` is "None" because its privatized count fell below the threshold of 60.*
 
 ### 2. Privacy Audit Report
 A human-readable report is printed to the standard output (`stdout`) summarizing the execution and the privacy guarantees applied.
@@ -145,7 +150,7 @@ A human-readable report is printed to the standard output (`stdout`) summarizing
 *   **Privacy Loss (Epsilon)**: The specific amount of privacy budget consumed by this particular execution (the number of PII types released divided by `--scale`).
 *   **Protection Strength**: A qualitative assessment of the privacy level (e.g., "HIGH" or "MODERATE").
 *   **Influence Limit**: A mathematical multiplier representing the maximum change an individual record can have on the output probability.
-*   **Raw vs. Private Table**: A side-by-side comparison for internal auditing (only visible to the user running the tool).
+*   **Raw vs. Private Table**: A side-by-side comparison for internal auditing. It includes the raw counts, so treat the report as confidential: it goes wherever standard output goes, such as container or CI logs. Share only the CSV.
 
 ## Practical Example: Increasing Privacy
 
@@ -156,5 +161,5 @@ python main.py --input pii_counts.json --output private.csv --scale 5.0 --thresh
 ```
 
 In this example:
-1.  **Scale 5.0**: Adds significantly more noise than the default (2.0), resulting in a lower epsilon: 0.2 per PII type, so 0.8 for the four types in the example above.
+1.  **Scale 5.0**: Adds significantly more noise than the default (2.0), resulting in a lower epsilon: 0.2 per PII type, so 1.0 for the five types in the JSON example above.
 2.  **Threshold 10**: Any PII count that, after adding noise, is less than 10 will be completely masked as `None`.

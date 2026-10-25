@@ -13,9 +13,9 @@ It uses the **Discrete Laplace mechanism** to privatize PII counts. This mechani
 Philter Diffuse is a key component of the Philterd privacy suite, designed to work seamlessly with:
 
 *   **[Philter](https://www.github.com/philterd/philter)**: A PII detection and redaction engine. Philter identifies PII in unstructured text.
-*   **[Phileas](https://www.github.com/philterd/phileas)**: A high-performance PII redaction service.
+*   **[Phileas](https://www.github.com/philterd/phileas)**: The PII redaction library underneath Philter, for Java, Python, and .NET.
 
-Typically, Philter or Phileas processes text and generates counts of PII entities found. Philter Diffuse then takes these raw counts and applies differential privacy before they are used for reporting or analytics.
+Typically, Philter redacts text and records counts of the PII types it found. Philter Diffuse then takes these raw counts and applies differential privacy before they are used for reporting or analytics. An application using Phileas directly can write its own counts to a JSON file for Philter Diffuse.
 
 ## Get Started
 
@@ -23,7 +23,7 @@ New to Philter Diffuse? The [Quickstart](quickstart.md) takes you from a clean c
 
 ## Key Features
 
-*   **Robust Differential Privacy**: Implements the Discrete Laplace mechanism from the OpenDP library, providing formally provable privacy guarantees.
+*   **Robust Differential Privacy**: Implements the Discrete Laplace mechanism from the OpenDP library, with a formal bound on how much a release reveals about any one document.
 *   **Persistent Privacy Budget Management**: Tracks the cumulative "epsilon" (privacy loss) across multiple queries. This prevents "privacy exhaustion," where repeated queries on the same data could eventually reveal individual information.
 *   **Flexible Data Ingestion**:
     *   **MongoDB Integration**: Directly connect to MongoDB to fetch and privatize counts stored in collections.

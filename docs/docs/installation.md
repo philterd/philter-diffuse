@@ -1,19 +1,19 @@
 # Installation
 
-Philter Diffuse can be installed directly as a Python package or run via Docker for convenience. 
+Philter Diffuse runs from a checkout of its repository, directly with Python or in Docker. It is not published as a package.
 
 ## Prerequisites
 
 Before installing Philter Diffuse, ensure your system meets the following requirements:
 
-*   **Python**: Version 3.8 or higher is required.
+*   **Python**: Version 3.12 is tested, in CI and in the Docker image. The current OpenDP release requires 3.10 or later.
 *   **pip**: The standard Python package manager.
 *   **MongoDB (Optional)**: If you plan to use MongoDB as a data source, ensure it's installed and accessible from your environment.
 *   **Docker (Optional)**: If you prefer to run the application in a container.
 
-## Direct Installation (Using pip)
+## Direct Installation
 
-1.  **Clone the Repository** (if applicable):
+1.  **Clone the Repository**:
     ```bash
     git clone https://github.com/philterd/philter-diffuse.git
     cd philter-diffuse
