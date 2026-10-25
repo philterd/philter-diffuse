@@ -1,0 +1,875 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User guide for Philter Diffuse.">
+      
+      
+        <meta name="author" content="philterd">
+      
+      
+        <link rel="canonical" href="https://philterd.github.io/philter-diffuse/privacy-budget/">
+      
+      
+        <link rel="prev" href="../usage/">
+      
+      
+        <link rel="next" href="../status/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Privacy Budget - Philter Diffuse</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="red" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#privacy-budget-management" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Philter Diffuse" class="md-header__button md-logo" aria-label="Philter Diffuse" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Philter Diffuse
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Privacy Budget
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/philterd/philter-diffuse" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Philter Diffuse" class="md-nav__button md-logo" aria-label="Philter Diffuse" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Philter Diffuse
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/philterd/philter-diffuse" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy Budget
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy Budget
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-core-concept-epsilon-epsilon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Core Concept: Epsilon ($\epsilon$)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Core Concept: Epsilon ($\epsilon$)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-do-we-need-a-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why do we need a budget?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#persistent-tracking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent Tracking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-budget-ceiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Budget Ceiling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Budget Ceiling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens-when-the-ceiling-is-reached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens when the ceiling is reached?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interpreting-protection-strength" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpreting Protection Strength
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#managing-the-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Managing the Budget
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Managing the Budget">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resetting-the-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resetting the Budget
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adjusting-the-ceiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adjusting the Ceiling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-core-concept-epsilon-epsilon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Core Concept: Epsilon ($\epsilon$)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Core Concept: Epsilon ($\epsilon$)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-do-we-need-a-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why do we need a budget?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#persistent-tracking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent Tracking
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-budget-ceiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Budget Ceiling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Budget Ceiling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-happens-when-the-ceiling-is-reached" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What happens when the ceiling is reached?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interpreting-protection-strength" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interpreting Protection Strength
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#managing-the-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Managing the Budget
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Managing the Budget">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resetting-the-budget" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resetting the Budget
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adjusting-the-ceiling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adjusting the Ceiling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="privacy-budget-management">Privacy Budget Management</h1>
+<p>Differential privacy relies on the concept of a "privacy budget," typically denoted by the Greek letter epsilon ($\epsilon$). This budget represents the maximum cumulative privacy loss that an organization is willing to tolerate for a given dataset.</p>
+<h2 id="the-core-concept-epsilon-epsilon">The Core Concept: Epsilon ($\epsilon$)</h2>
+<p>In Philter Diffuse, $\epsilon$ is a measure of the information leak allowed for each query. </p>
+<ul>
+<li><strong>Calculation</strong>: For the Discrete Laplace mechanism used here, epsilon for a single query is calculated as:
+    $$\epsilon = \frac{\Delta f}{\text{scale}}$$
+    Where $\Delta f$ is the <strong>sensitivity</strong> and <strong>scale</strong> is the noise parameter provided by the user via <code>--scale</code>. One document adds at most one to each PII type's count, but it can add to every type at once, so the sensitivity of a query is the number of PII types it releases. OpenDP computes epsilon from it.</li>
+<li><strong>Default</strong>: With the default scale of <code>2.0</code>, a query releasing 4 PII types consumes $\epsilon = 4/2 = 2.0$. To spend less per query, raise <code>--scale</code>: epsilon falls in proportion.</li>
+</ul>
+<h3 id="why-do-we-need-a-budget">Why do we need a budget?</h3>
+<p>Every time a privatized query is released, a small amount of information about the underlying data is leaked. If an attacker can query the same dataset multiple times with different noise, they could potentially average out the noise to reconstruct the original values. A privacy budget places a hard limit on this cumulative leakage.</p>
+<h2 id="persistent-tracking">Persistent Tracking</h2>
+<p>Philter Diffuse automatically tracks the cumulative epsilon spent for each unique data source (a MongoDB collection, a JSON file, or a Philter deployment read through its API). This tracking is <strong>persistent</strong>, meaning it survives between different executions of the tool.</p>
+<ul>
+<li><strong>MongoDB Mode</strong>: The spent budget is stored in a collection named <code>privacy_metadata</code> within the same database as the data.</li>
+<li><strong>JSON Mode</strong>: The spent budget is stored in a local file named <code>privacy_budget.json</code> in the working directory.</li>
+<li><strong>Philter API Mode</strong> (<code>--philter-url</code>): The spent budget is stored in the same local <code>privacy_budget.json</code>, under a key naming the Philter URL, such as <code>pii_count_aggregates@https://localhost:8080</code>. Nothing is written to Philter or its database. Every read from that deployment draws on the one budget, whatever <code>--context</code>, <code>--from</code>, or <code>--to</code> it uses, so overlapping reports cannot each spend a fresh budget. If Philter reports that count recording is off, no budget is spent. Moving from <code>--mongo-uri --aggregates</code> to <code>--philter-url</code> starts a new budget entry: the epsilon already spent is recorded in MongoDB's <code>privacy_metadata</code> collection (under the <code>pii_counts</code> collection name), not in <code>privacy_budget.json</code>. When you move, copy the spent epsilon to the new entry so earlier releases still count against the ceiling.</li>
+</ul>
+<h2 id="the-budget-ceiling">The Budget Ceiling</h2>
+<p>The <code>--budget-ceiling</code> parameter (default: <code>10.0</code>) defines the maximum allowed cumulative epsilon. </p>
+<h3 id="what-happens-when-the-ceiling-is-reached">What happens when the ceiling is reached?</h3>
+<p>If a requested query would cause the total spent epsilon to exceed the ceiling, Philter Diffuse takes the following actions to protect the data:</p>
+<ol>
+<li><strong>Warning</strong>: A prominent warning is printed to the console and included in the audit report.</li>
+<li><strong>Infinite Noise</strong>: The scale is effectively increased to infinity.</li>
+<li><strong>Result Suppression</strong>: All privatized counts are returned as <code>0</code> (or masked if thresholding is active). </li>
+<li><strong>No Budget Consumption</strong>: Since the released result contains no useful information (pure noise), no additional epsilon is deducted from the remaining budget.</li>
+</ol>
+<h2 id="interpreting-protection-strength">Interpreting Protection Strength</h2>
+<p>To assist non-technical auditors, Philter Diffuse provides a qualitative interpretation of the privacy loss of each query (not the cumulative total, which is in the budget store):</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Query Epsilon ($\epsilon$)</th>
+<th style="text-align: left;">Protection Strength</th>
+<th style="text-align: left;">Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">$\epsilon \leq 0.1$</td>
+<td style="text-align: left;"><strong>EXTREME</strong></td>
+<td style="text-align: left;">Highest level of protection; suitable for extremely sensitive personal data.</td>
+</tr>
+<tr>
+<td style="text-align: left;">$0.1 &lt; \epsilon \leq 1.0$</td>
+<td style="text-align: left;"><strong>HIGH</strong></td>
+<td style="text-align: left;">Strong protection; standard for most production use cases.</td>
+</tr>
+<tr>
+<td style="text-align: left;">$1.0 &lt; \epsilon \leq 5.0$</td>
+<td style="text-align: left;"><strong>MODERATE</strong></td>
+<td style="text-align: left;">Balanced protection and utility.</td>
+</tr>
+<tr>
+<td style="text-align: left;">$\epsilon &gt; 5.0$</td>
+<td style="text-align: left;"><strong>LOW</strong></td>
+<td style="text-align: left;">Useful for testing or less sensitive data; risk of re-identification increases.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="managing-the-budget">Managing the Budget</h2>
+<h3 id="resetting-the-budget">Resetting the Budget</h3>
+<p>If you have refreshed your underlying dataset (e.g., a new month of data) and wish to reset the budget:
+*   <strong>MongoDB</strong>: Delete the document for that collection in the <code>privacy_metadata</code> collection.
+*   <strong>JSON or Philter API</strong>: Edit <code>privacy_budget.json</code> and remove the entry for your file or Philter URL, or delete the file entirely.</p>
+<h3 id="adjusting-the-ceiling">Adjusting the Ceiling</h3>
+<p>You can increase the ceiling by passing a higher value to the <code>--budget-ceiling</code> flag during execution. However, this should only be done after careful consideration of the privacy implications.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright 2026 Philterd, LLC
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": [], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
