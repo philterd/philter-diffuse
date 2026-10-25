@@ -195,6 +195,9 @@ class PhilterClient:
                 + (f": {message}" if message else ".")
             if error.code == 404:
                 message += f" {self.base_url} may not serve /api/pii-counts: reading counts through the API requires Philter 4.0 or later."
+            elif error.code == 400 and reason is None and self.base_url.startswith("http://"):
+                # Philter's HTTPS port answers a plain HTTP request with a bare 400.
+                message += " Philter serves HTTPS by default. Check whether --philter-url should start with https://."
             elif reason in self.REASON_HINTS:
                 message += f" {self.REASON_HINTS[reason]}"
         if request_id:

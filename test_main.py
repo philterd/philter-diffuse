@@ -696,6 +696,31 @@ class TestPhilterApi(unittest.TestCase):
                         PhilterClient(philter.url, API_KEY).fetch_pii_count_aggregates()
                 self.assertIn("Philter 4.0 or later", str(raised.exception))
 
+    def test_plain_http_to_an_https_port_suggests_https(self):
+        class TlsPort(http.server.BaseHTTPRequestHandler):
+            # Philter's Tomcat answers plain HTTP on its HTTPS port like this.
+            def do_GET(self):
+                payload = b"Bad Request\nThis combination of host and port requires TLS.\n"
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain;charset=UTF-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), TlsPort)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with self.assertRaises(PhilterApiError) as raised:
+                PhilterClient(f"http://127.0.0.1:{server.server_address[1]}", API_KEY).fetch_pii_count_aggregates()
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertIn("HTTP 400", str(raised.exception))
+        self.assertIn("https://", str(raised.exception))
+
     def test_redirects_are_not_followed(self):
         class Redirect(http.server.BaseHTTPRequestHandler):
             def do_GET(self):

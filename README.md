@@ -52,7 +52,7 @@ pip install -r requirements.txt
    ```bash
    ./run-docker.sh
    ```
-   This script builds the image and runs a sample privatization task using volume mounts.
+   This script builds the image and runs a sample privatization task using volume mounts. The image's entrypoint is `main.py` and it runs in `/data`, so mount a directory there: it holds the input, the output, and `privacy_budget.json`, which is otherwise lost when the container exits. See [Installation](https://philterd.github.io/philterdiffuse/installation/) for reading counts from a Philter container.
 
 ## Privacy Budget Management
 

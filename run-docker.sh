@@ -20,11 +20,10 @@ fi
 echo "Running Philter Diffuse in Docker..."
 
 docker run --rm \
-  -v "$(pwd)":/app/data \
+  -v "$(pwd)":/data \
   philter-diffuse \
-  python main.py \
-  --input /app/data/sample_counts.json \
-  --output /app/data/docker_privatized_counts.csv \
+  --input sample_counts.json \
+  --output docker_privatized_counts.csv \
   --threshold 5
 
-echo "Docker run complete. Output written to docker_privatized_counts.csv"
+echo "Docker run complete. Output written to docker_privatized_counts.csv, budget to privacy_budget.json"

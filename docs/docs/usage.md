@@ -95,8 +95,9 @@ Error: Philter refused the request (HTTP 403, missing_scope): This API key does 
 | `missing_scope` | Give the key the `pii-counts:read` scope. |
 | `admin_required` | Use a key whose user is a Philter administrator. |
 | HTTP 404 | Philter is older than 4.0, or `--philter-url` points somewhere else. |
+| HTTP 400 with no `reason` | With an `http://` URL, Philter is most likely serving HTTPS on that port. Use `https://`. |
 
-**TLS.** Certificates are verified, and verification cannot be turned off. Philter's Docker image generates a self-signed certificate (with `localhost` and `127.0.0.1` in its subject alternative name) the first time it starts. To trust it, export it as PEM (the keystore password is `SSL_KEYSTORE_PASSWORD`, `philter` by default) and pass it with `--philter-ca-cert`:
+**TLS.** Certificates are verified, and verification cannot be turned off. Philter's Docker image generates a self-signed certificate (with `localhost`, `philter`, and `127.0.0.1` in its subject alternative name) the first time it starts. To trust it, export it as PEM (the keystore password is `SSL_KEYSTORE_PASSWORD`, `philter` by default) and pass it with `--philter-ca-cert`:
 
 ```bash
 docker cp <philter-container>:/opt/philter/ssl/philter.p12 .
