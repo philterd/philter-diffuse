@@ -1,6 +1,6 @@
 # Installation
 
-Philter Diffuse runs from a checkout of its repository, directly with Python or in Docker. It is not published as a package.
+Philter Diffuse runs from its Docker image, or from a checkout of its repository with Python. It is not published to PyPI.
 
 ## Prerequisites
 
@@ -37,19 +37,23 @@ Before installing Philter Diffuse, ensure your system meets the following requir
 
 Docker provides an isolated and consistent environment for running Philter Diffuse, eliminating potential "it works on my machine" issues.
 
-### 1. Build the Docker Image
+### 1. Get the Docker Image
 
-From the root of the project directory, build the image:
+Pull the image from [Docker Hub](https://hub.docker.com/r/philterd/philter-diffuse):
+
+```bash
+docker pull philterd/philter-diffuse:0.1.0
+```
+
+To build it from a checkout instead, run this from the root of the project directory, and use `philter-diffuse` as the image name in the commands below:
 
 ```bash
 docker build -t philter-diffuse .
 ```
 
-This will download the base Python image, copy the source code, and install all necessary dependencies inside the container.
-
 ### 2. Run the Container
 
-You can run the container manually or use the provided `run-docker.sh` script, which automates common volume mounts for data processing.
+You can run the container manually, or from a checkout use the provided `run-docker.sh` script, which builds the image and automates common volume mounts for data processing.
 
 **Example: Using the provided script**
 ```bash
@@ -60,7 +64,7 @@ You can run the container manually or use the provided `run-docker.sh` script, w
 The image's entrypoint is `main.py`, so arguments after the image name are Philter Diffuse's options. It runs in `/data`, and the image sets `PHILTER_DIFFUSE_BUDGET_FILE` to `/data/privacy_budget.json`: mount a directory there to hold the input, the output, and the budget.
 ```bash
 docker run --rm --user "$(id -u):$(id -g)" -v $(pwd)/data:/data \
-           philter-diffuse \
+           philterd/philter-diffuse:0.1.0 \
            --input pii_counts.json \
            --source claims-2026 \
            --pii-types ssn,age,zipcode,creditcard \
@@ -78,7 +82,7 @@ docker network create philter-net
 docker network connect --alias philter philter-net <philter-container>
 docker run --rm --network philter-net --user "$(id -u):$(id -g)" -v $(pwd)/data:/data \
            -e PHILTER_API_KEY \
-           philter-diffuse \
+           philterd/philter-diffuse:0.1.0 \
            --philter-url https://philter:8080 \
            --philter-ca-cert philter.pem \
            --pii-types ssn,email-address,phone-number \

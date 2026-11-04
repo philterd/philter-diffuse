@@ -54,7 +54,11 @@ Every run names the PII types to release with `--pii-types`. Choose the list bef
    ```
 
 4. **Using Docker**
-   You can also run the tool using Docker:
+   Pull the image from [Docker Hub](https://hub.docker.com/r/philterd/philter-diffuse):
+   ```bash
+   docker pull philterd/philter-diffuse:0.1.0
+   ```
+   Or, from a checkout, build the image and run a sample:
    ```bash
    ./run-docker.sh
    ```
