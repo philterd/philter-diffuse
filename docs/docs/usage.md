@@ -15,6 +15,7 @@ python main.py --mongo-uri "mongodb://localhost:27017/analytics_db" --pii-types 
 
 *   **Behavior**: It connects to the `analytics_db` on `localhost`.
 *   **Fields**: The tool counts documents containing each field in `--pii-types`. The collection is fixed.
+*   **Access**: The MongoDB user needs write access to the `privacy_metadata` collection, where the budget is kept. A run by a read-only user stops with an error and releases nothing.
 
 ### 2. JSON Mode
 
@@ -165,6 +166,12 @@ A human-readable report is printed to the standard output (`stdout`) summarizing
 *   **Protection Strength**: A qualitative assessment of the privacy level (e.g., "HIGH" or "MODERATE").
 *   **Influence Limit**: A mathematical multiplier representing the maximum change one document can have on the output probability.
 *   **Private Counts Table**: The privatized count for each PII type, as written to the CSV. Raw counts are never printed, so the report can go to container or CI logs.
+
+## Using the Output in BI Tools
+
+Load the CSV into a BI tool, such as Metabase or Tableau, as you would any other table. A released CSV can be read, shared, and refreshed on a dashboard as often as needed at no further privacy cost, because reusing a released result spends no budget.
+
+Do not point a dashboard refresh at Philter Diffuse itself. Every run is a new release that spends budget, so regenerate the CSV only when you mean to publish new numbers.
 
 ## Practical Example: Increasing Privacy
 
