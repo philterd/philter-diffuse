@@ -5,3 +5,4 @@ __pycache__/
 sample_counts.json
 privatized_counts.csv
 privacy_budget.json
+privacy_budget.json.lock

@@ -28,17 +28,52 @@ import threading
 import urllib.parse
 from unittest.mock import patch, MagicMock
 import main
-from main import PhilterDiffuse, PhilterClient, PhilterApiError, PHILTER_API_KEY_ENV
+from main import PhilterDiffuse, PhilterClient, PhilterApiError, BudgetExceeded, BUDGET_FILE_ENV, PHILTER_API_KEY_ENV, restrict_to_declared_types
 import mongomock
+from concurrent.futures import ThreadPoolExecutor
 
-class TestPhilterDiffuse(unittest.TestCase):
+# Tests must never touch the real budget under the home directory.
+os.environ[BUDGET_FILE_ENV] = "privacy_budget.json"
+
+class TempDirTestCase(unittest.TestCase):
+    """Runs each test in its own directory, so nothing it writes lands in the checkout."""
+
     def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cwd = os.getcwd()
+        os.chdir(self.tmp)
+
+    def tearDown(self):
+        os.chdir(self.cwd)
+        shutil.rmtree(self.tmp)
+
+    def write_counts(self, counts, path="counts.json"):
+        with open(path, "w") as f:
+            f.write(counts if isinstance(counts, str) else json.dumps(counts))
+
+    def run_main(self, *argv):
+        """
+        Runs main() and returns (exit_code, stdout, stderr).
+        """
+        out, err = io.StringIO(), io.StringIO()
+        code = 0
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                main.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        return code, out.getvalue(), err.getvalue()
+
+    def spent(self, source="claims", path="privacy_budget.json"):
+        with open(path) as f:
+            return json.load(f)[source]
+
+
+class TestPhilterDiffuse(TempDirTestCase):
+    def setUp(self):
+        super().setUp()
         self.mongo_uri = "mongodb://localhost:27017/test_db"
         self.budget_file = "privacy_budget.json"
-        
-        # Cleanup budget file if it exists
-        if os.path.exists(self.budget_file):
-            os.remove(self.budget_file)
 
         # Use mongomock to simulate MongoDB
         with patch('main.MongoClient', mongomock.MongoClient):
@@ -52,10 +87,6 @@ class TestPhilterDiffuse(unittest.TestCase):
             {"age": 40}
         ])
 
-    def tearDown(self):
-        if os.path.exists(self.budget_file):
-            os.remove(self.budget_file)
-
     def test_budget_tracker_json(self):
         # Test budget tracking with JSON (no mongo)
         # Use a specific collection name to simulate filename
@@ -63,7 +94,7 @@ class TestPhilterDiffuse(unittest.TestCase):
         raw_counts = {"ssn": 10}
         
         # Query 1: scale=1.0, epsilon=1.0
-        _, epsilon1, _ = engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
+        _, epsilon1 = engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
         self.assertEqual(epsilon1, 1.0)
         self.assertEqual(engine._get_spent_epsilon(), 1.0)
         
@@ -74,16 +105,14 @@ class TestPhilterDiffuse(unittest.TestCase):
             self.assertEqual(budget_data["test_counts.json"], 1.0)
         
         # Query 2: scale=1.0, epsilon=1.0 (Total=2.0)
-        _, epsilon2, _ = engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
+        _, epsilon2 = engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
         self.assertEqual(epsilon2, 1.0)
         self.assertEqual(engine._get_spent_epsilon(), 2.0)
         
         # Query 3: scale=1.0, epsilon=1.0 (Total would be 3.0 > 2.5)
-        private3, epsilon3, exhausted3 = engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
-        self.assertEqual(epsilon3, 0.0)
-        self.assertTrue(exhausted3)
+        with self.assertRaises(BudgetExceeded):
+            engine.privatize_counts(raw_counts, scale=1.0, budget_ceiling=2.5)
         self.assertEqual(engine._get_spent_epsilon(), 2.0)
-        self.assertTrue(all(v == 0 for v in private3.values()))
 
     @patch('main.MongoClient', mongomock.MongoClient)
     def test_budget_tracker_mongo(self):
@@ -92,21 +121,19 @@ class TestPhilterDiffuse(unittest.TestCase):
         raw_counts = {"ssn": 10}
         
         # Query 1: scale=2.0, epsilon=0.5
-        _, epsilon1, _ = engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
+        _, epsilon1 = engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
         self.assertEqual(epsilon1, 0.5)
         self.assertEqual(engine._get_spent_epsilon(), 0.5)
         
         # Query 2: scale=2.0, epsilon=0.5 (Total=1.0)
-        _, epsilon2, _ = engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
+        _, epsilon2 = engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
         self.assertEqual(epsilon2, 0.5)
         self.assertEqual(engine._get_spent_epsilon(), 1.0)
         
         # Query 3: scale=2.0, epsilon=0.5 (Total would be 1.5 > 1.0)
-        private3, epsilon3, exhausted3 = engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
-        self.assertEqual(epsilon3, 0.0)
-        self.assertTrue(exhausted3)
+        with self.assertRaises(BudgetExceeded):
+            engine.privatize_counts(raw_counts, scale=2.0, budget_ceiling=1.0)
         self.assertEqual(engine._get_spent_epsilon(), 1.0)
-        self.assertTrue(all(v == 0 for v in private3.values()))
 
     def test_fetch_pii_counts(self):
         fields = ["ssn", "age", "zipcode"]
@@ -165,11 +192,10 @@ class TestPhilterDiffuse(unittest.TestCase):
     def test_privatize_counts(self):
         raw_counts = {"ssn": 10, "age": 20}
         scale = 1.0
-        private_results, epsilon, exhausted = self.engine.privatize_counts(raw_counts, scale=scale)
+        private_results, epsilon = self.engine.privatize_counts(raw_counts, scale=scale)
         
         # Two types: one document can change both counts.
         self.assertEqual(epsilon, 2.0 / scale)
-        self.assertFalse(exhausted)
         self.assertIn("ssn", private_results)
         self.assertIn("age", private_results)
         self.assertIsInstance(private_results["ssn"], int)
@@ -183,7 +209,7 @@ class TestPhilterDiffuse(unittest.TestCase):
         for n in (1, 2, 5, 10):
             with self.subTest(types=n):
                 raw_counts = {f"type-{i}": 100 for i in range(n)}
-                _, epsilon, _ = PhilterDiffuse(collection_name=f"types-{n}.json").privatize_counts(
+                _, epsilon = PhilterDiffuse(collection_name=f"types-{n}.json").privatize_counts(
                     raw_counts, scale=2.0, budget_ceiling=100.0)
                 self.assertEqual(epsilon, n / 2.0)
 
@@ -200,7 +226,7 @@ class TestPhilterDiffuse(unittest.TestCase):
             mock_measurement.map.return_value = 1.0 / scale
             mock_make.return_value = mock_measurement
             
-            private_results, _, _ = self.engine.privatize_counts(raw_counts, scale=scale)
+            private_results, _ = self.engine.privatize_counts(raw_counts, scale=scale)
             self.assertEqual(private_results["ssn"], 0)
 
     def test_interpret_epsilon(self):
@@ -237,7 +263,7 @@ class TestPhilterDiffuse(unittest.TestCase):
         private = {"ssn": 3}
         epsilon = 0.5
         # This will print to console, we just verify it runs with threshold
-        self.engine.generate_audit_report(raw, private, epsilon, threshold=5)
+        self.engine.generate_audit_report(private, epsilon, threshold=5)
 
     def test_generate_audit_report(self):
         raw = {"ssn": 5}
@@ -245,15 +271,14 @@ class TestPhilterDiffuse(unittest.TestCase):
         epsilon = 0.5
         
         # We want to see the report, so we don't mock print here anymore
-        self.engine.generate_audit_report(raw, private, epsilon)
+        self.engine.generate_audit_report(private, epsilon)
 
     def test_privatize_counts_edge_cases(self):
         # Empty counts
-        res, eps, exh = self.engine.privatize_counts({}, scale=1.0)
+        res, eps = self.engine.privatize_counts({}, scale=1.0)
         self.assertEqual(res, {})
         # Nothing is released, so nothing is spent.
         self.assertEqual(eps, 0.0)
-        self.assertFalse(exh)
 
         # Scale zero or negative
         with self.assertRaises(ValueError):
@@ -263,7 +288,7 @@ class TestPhilterDiffuse(unittest.TestCase):
 
         # Non-integer counts (float)
         # Should be cast to int and run without error
-        res, eps, exh = self.engine.privatize_counts({"ssn": 10.9}, scale=1.0)
+        res, eps = self.engine.privatize_counts({"ssn": 10.9}, scale=1.0)
         self.assertIn("ssn", res)
         self.assertIsInstance(res["ssn"], int)
 
@@ -283,17 +308,15 @@ class TestPhilterDiffuse(unittest.TestCase):
         # Ceiling is 1.0. Spent is 0.
         # Query with scale 1.0 -> epsilon 1.0.
         # Total spent becomes 1.0. This should be allowed.
-        _, eps, exh = engine.privatize_counts(raw, scale=1.0, budget_ceiling=1.0)
+        _, eps = engine.privatize_counts(raw, scale=1.0, budget_ceiling=1.0)
         self.assertEqual(eps, 1.0)
-        self.assertFalse(exh)
         self.assertEqual(engine._get_spent_epsilon(), 1.0)
         
         # Next query should be blocked
-        _, eps2, exh2 = engine.privatize_counts(raw, scale=1.0, budget_ceiling=1.0)
-        self.assertEqual(eps2, 0.0)
-        self.assertTrue(exh2)
+        with self.assertRaises(BudgetExceeded):
+            engine.privatize_counts(raw, scale=1.0, budget_ceiling=1.0)
 
-class TestCLI(unittest.TestCase):
+class TestCLI(TempDirTestCase):
     def test_cli_json_loading(self):
         """Test that the CLI correctly loads data when --input is provided."""
         test_data = {"ssn": 10, "age": 20}
@@ -324,9 +347,8 @@ class TestCLI(unittest.TestCase):
                 loaded_data = engine.load_counts_from_json(args.input)
                 self.assertEqual(loaded_data, test_data)
                 
-                private_data, epsilon, exhausted = engine.privatize_counts(loaded_data, scale=args.scale)
+                private_data, epsilon = engine.privatize_counts(loaded_data, scale=args.scale)
                 self.assertEqual(epsilon, 2.0 / 1.0)
-                self.assertFalse(exhausted)
                 self.assertIn("ssn", private_data)
 
                 if args.output:
@@ -344,7 +366,7 @@ class TestCLI(unittest.TestCase):
                                 pass
 
                 # Show the report in the test output
-                engine.generate_audit_report(loaded_data, private_data, epsilon, csv_file=args.output, threshold=args.threshold, budget_exhausted=exhausted)
+                engine.generate_audit_report(private_data, epsilon, csv_file=args.output, threshold=args.threshold)
         finally:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -365,13 +387,12 @@ class TestCLI(unittest.TestCase):
             # Mock fetch_pii_counts to return fixed data
             with patch.object(main.PhilterDiffuse, 'fetch_pii_counts', return_value={"age": 10}):
                 raw_data = engine.fetch_pii_counts(["age"])
-                private_data, epsilon, exhausted = engine.privatize_counts(raw_data, scale=2.0)
+                private_data, epsilon = engine.privatize_counts(raw_data, scale=2.0)
                 self.assertEqual(raw_data, {"age": 10})
                 self.assertEqual(epsilon, 0.5)
-                self.assertFalse(exhausted)
                 
                 # Show the report in the test output
-                engine.generate_audit_report(raw_data, private_data, epsilon, csv_file=output_path, budget_exhausted=exhausted)
+                engine.generate_audit_report(private_data, epsilon, csv_file=output_path)
         
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -386,7 +407,7 @@ class TestCLI(unittest.TestCase):
         with patch('sys.argv', ['main.py', '--input', 'some_file.json']):
             try:
                 # We expect argparse to raise SystemExit(2)
-                runpy.run_path('main.py', run_name='__main__')
+                runpy.run_path(main.__file__, run_name='__main__')
             except SystemExit as e:
                 self.assertEqual(e.code, 2)
 
@@ -404,11 +425,11 @@ class TestCLI(unittest.TestCase):
         import main
         import sys
         
-        with patch('sys.argv', ['main.py', '--output', 'test.csv']):
+        with patch('sys.argv', ['main.py', '--mongo-uri', 'mongodb://localhost:27017/test_db', '--pii-types', 'ssn', '--output', 'test.csv']):
             # To test the block under `if __name__ == "__main__":`, we can use runpy
             import runpy
             try:
-                runpy.run_path('main.py', run_name='__main__')
+                runpy.run_path(main.__file__, run_name='__main__')
             except SystemExit:
                 pass # Expected
             
@@ -482,21 +503,14 @@ def _entry(context, day, counts, owner="jordan"):
 API_KEY = "test-api-key-do-not-print"
 
 
-class TestPhilterApi(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.cwd = os.getcwd()
-        os.chdir(self.tmp)  # keep privacy_budget.json and output files out of the checkout
-
-    def tearDown(self):
-        os.chdir(self.cwd)
-        shutil.rmtree(self.tmp)
+class TestPhilterApi(TempDirTestCase):
 
     def run_cli(self, *argv, api_key=API_KEY):
         """
         Runs main() with the given arguments and returns (exit_code, stdout, stderr).
         """
+        if "--pii-types" not in argv:
+            argv = ("--pii-types", "SSN,PERSON") + argv
         env = {k: v for k, v in os.environ.items() if k != PHILTER_API_KEY_ENV}
         if api_key is not None:
             env[PHILTER_API_KEY_ENV] = api_key
@@ -799,10 +813,257 @@ class TestPhilterApi(unittest.TestCase):
     def test_mongodb_aggregates_still_work_with_a_deprecation_warning(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            main.main(["--mongo-uri", "mongodb://localhost:27017/test_db", "--aggregates", "--output", "out.csv"])
+            main.main(["--mongo-uri", "mongodb://localhost:27017/test_db", "--aggregates", "--pii-types", "ssn", "--output", "out.csv"])
         self.assertIn("deprecated", err.getvalue())
         self.assertIn("--philter-url", err.getvalue())
         self.assertTrue(os.path.exists("out.csv"))
+
+
+class TestDeclaredTypes(TempDirTestCase):
+    """The released rows and the epsilon charged must not depend on which types the data holds."""
+
+    def run_json(self, counts, *argv):
+        with open("counts.json", "w") as f:
+            json.dump(counts, f)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            main.main(["--input", "counts.json", "--source", "claims", "--output", "out.csv", *argv])
+        with open("out.csv", newline="") as f:
+            rows = [row[0] for row in list(csv.reader(f))[1:]]
+        with open("privacy_budget.json") as f:
+            return rows, json.load(f)["claims"], err.getvalue()
+
+    def test_restrict_keeps_declared_types_in_declared_order(self):
+        counts, left_out = restrict_to_declared_types({"ssn": 5, "age": 7, "passport-number": 1}, ["email-address", "ssn"])
+        self.assertEqual(list(counts.items()), [("email-address", 0), ("ssn", 5)])
+        self.assertEqual(left_out, 2)
+
+    def test_rows_and_epsilon_do_not_reveal_a_type_only_one_document_holds(self):
+        # These two inputs differ by one document. Neither the rows nor the charge may differ.
+        without = self.run_json({"ssn": 500}, "--pii-types", "ssn,passport-number", "--threshold", "25")
+        os.remove("privacy_budget.json")
+        with_rare = self.run_json({"ssn": 500, "passport-number": 1}, "--pii-types", "ssn,passport-number", "--threshold", "25")
+        self.assertEqual(without[0], ["ssn", "passport-number"])
+        self.assertEqual(without[:2], with_rare[:2])
+        self.assertEqual(without[1], 1.0)
+
+    def test_undeclared_type_is_left_out_and_reported_only_as_a_count(self):
+        rows, _, err = self.run_json({"ssn": 500, "passport-number": 1}, "--pii-types", "ssn")
+        self.assertEqual(rows, ["ssn"])
+        self.assertIn("1 PII type(s)", err)
+        self.assertNotIn("passport-number", err)
+
+    def test_no_warning_when_every_type_is_declared(self):
+        self.assertEqual(self.run_json({"ssn": 500}, "--pii-types", "ssn")[2], "")
+
+    def test_repeated_type_is_charged_once(self):
+        rows, spent, _ = self.run_json({"ssn": 500}, "--pii-types", "ssn, ssn", "--scale", "2.0")
+        self.assertEqual(rows, ["ssn"])
+        self.assertEqual(spent, 0.5)
+
+    def test_pii_types_is_required_and_cannot_be_empty(self):
+        for argv, expected in [([], "--pii-types"), (["--pii-types", "ssn,,age"], "comma-separated"), (["--pii-types", ""], "comma-separated")]:
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+                    main.main(["--input", "counts.json", "--source", "claims", "--output", "out.csv", *argv])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(expected, err.getvalue())
+
+    @patch('main.MongoClient', mongomock.MongoClient)
+    def test_field_counting_reads_the_declared_fields(self):
+        with patch.object(main.PhilterDiffuse, 'fetch_pii_counts', return_value={"ssn": 3, "age": 0}) as fetch, \
+                contextlib.redirect_stdout(io.StringIO()):
+            main.main(["--mongo-uri", "mongodb://localhost:27017/test_db", "--pii-types", "ssn,age", "--output", "out.csv"])
+        fetch.assert_called_once_with(["ssn", "age"])
+
+
+class TestBudgetDurability(TempDirTestCase):
+
+    def test_budget_does_not_depend_on_the_working_directory(self):
+        self.write_counts({"ssn": 500})
+        counts = os.path.abspath("counts.json")
+        os.mkdir("elsewhere")
+        with patch.dict(os.environ, {BUDGET_FILE_ENV: os.path.abspath("budget/store.json")}):
+            for directory in (".", "elsewhere"):
+                os.chdir(directory)
+                code, _, err = self.run_main("--input", counts, "--source", "claims", "--pii-types", "ssn",
+                                             "--scale", "1", "--output", "out.csv")
+                self.assertEqual(code, 0, err)
+            self.assertEqual(self.spent(path=os.path.join(self.tmp, "budget/store.json")), 2.0)
+
+    def test_default_location_is_under_the_home_directory(self):
+        env = {k: v for k, v in os.environ.items() if k != BUDGET_FILE_ENV}
+        with patch.dict(os.environ, dict(env, HOME=self.tmp), clear=True):
+            engine = PhilterDiffuse(collection_name="claims")
+        self.assertEqual(engine.budget_file, os.path.join(self.tmp, ".philter-diffuse", "privacy_budget.json"))
+
+    def test_budget_file_flag_overrides_the_environment(self):
+        self.write_counts({"ssn": 500})
+        code, _, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn",
+                                     "--budget-file", "chosen.json", "--output", "out.csv")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.spent(path="chosen.json"), 0.5)
+        self.assertFalse(os.path.exists("privacy_budget.json"))
+
+    def test_renaming_or_copying_the_input_does_not_start_a_fresh_budget(self):
+        for name in ("counts.json", "renamed.json"):
+            self.write_counts({"ssn": 500}, name)
+            self.run_main("--input", name, "--source", "claims", "--pii-types", "ssn", "--scale", "1", "--output", "out.csv")
+        self.assertEqual(self.spent(), 2.0)
+
+    def test_concurrent_charges_never_pass_the_ceiling(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        def charge(_):
+            try:
+                PhilterDiffuse(collection_name="claims", budget_file="budget.json")._charge(1.0, 5.0)
+                return True
+            except BudgetExceeded:
+                return False
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(charge, range(32)))
+        self.assertEqual(sum(results), 5)
+        self.assertEqual(engine._get_spent_epsilon(), 5.0)
+
+    def test_a_failed_write_keeps_the_previous_budget(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        engine._charge(1.0, 5.0)
+        with patch('main.os.replace', side_effect=OSError("disk full")), self.assertRaises(OSError):
+            engine._charge(1.0, 5.0)
+        self.assertEqual(engine._get_spent_epsilon(), 1.0)
+        self.assertEqual(sorted(os.listdir(".")), ["budget.json", "budget.json.lock"])
+
+    def test_rewriting_the_budget_keeps_its_permissions(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        engine._charge(1.0, 5.0)
+        os.chmod("budget.json", 0o640)
+        engine._charge(1.0, 5.0)
+        self.assertEqual(os.stat("budget.json").st_mode & 0o777, 0o640)
+
+    def test_a_corrupt_budget_file_is_refused_rather_than_reset(self):
+        self.write_counts({"ssn": 500})
+        self.write_counts("{not json", "privacy_budget.json")
+        code, out, _ = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn", "--output", "out.csv")
+        self.assertEqual(code, 1)
+        self.assertIn("not valid JSON", out)
+        self.assertFalse(os.path.exists("out.csv"))
+
+    def test_noise_is_not_sampled_until_the_charge_is_recorded(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        measurement = MagicMock()
+        measurement.map.return_value = 1.0
+        with patch('main.dp.m.make_laplace', return_value=measurement), \
+                patch('main.os.replace', side_effect=OSError("disk full")), self.assertRaises(OSError):
+            engine.privatize_counts({"ssn": 500})
+        measurement.assert_not_called()
+
+    @patch('main.MongoClient', mongomock.MongoClient)
+    def test_mongo_charge_is_refused_at_the_ceiling_without_a_second_record(self):
+        engine = PhilterDiffuse("mongodb://localhost:27017/charge_db")
+        engine._charge(1.0, 1.5)
+        with self.assertRaises(BudgetExceeded):
+            engine._charge(1.0, 1.5)
+        self.assertEqual(engine._get_spent_epsilon(), 1.0)
+        self.assertEqual(engine.metadata_collection.count_documents({}), 1)
+
+
+class TestRefusedRelease(TempDirTestCase):
+
+    def refused(self, *argv):
+        self.write_counts({"ssn": 500, "age": 700})
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn,age",
+                             "--scale", "1", "--budget-ceiling", "3", "--output", "out.csv", *argv)
+
+    def test_refusal_exits_non_zero_and_keeps_the_earlier_output(self):
+        self.assertEqual(self.refused()[0], 0)
+        with open("out.csv") as f:
+            released = f.read()
+        code, out, err = self.refused()
+        self.assertEqual(code, 1)
+        self.assertIn("costs epsilon 2", err)
+        self.assertIn("spent 2 of its budget ceiling of 3", err)
+        with open("out.csv") as f:
+            self.assertEqual(f.read(), released)
+        self.assertEqual(self.spent(), 2.0)
+
+    def test_refusal_writes_no_output_and_no_report(self):
+        code, out, _ = self.run_main_with_too_many_types()
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists("out.csv"))
+        self.assertNotIn("PRIVACY AUDIT REPORT", out)
+
+    def run_main_with_too_many_types(self):
+        types = [f"type-{i}" for i in range(25)]
+        self.write_counts({t: 100 for t in types})
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", ",".join(types), "--output", "out.csv")
+
+
+class TestAuditReport(TempDirTestCase):
+
+    def test_report_holds_private_counts_but_never_raw_ones(self):
+        self.write_counts({"ssn": 987654321})
+        measurement = MagicMock(return_value=[123456789])
+        measurement.map.return_value = 0.5
+        with patch('main.dp.m.make_laplace', return_value=measurement):
+            code, out, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn", "--output", "out.csv")
+        self.assertEqual(code, 0, err)
+        self.assertIn("123456789", out)
+        self.assertNotIn("987654321", out + err)
+        self.assertNotIn("Raw", out)
+
+
+class TestInputValidation(TempDirTestCase):
+
+    def run_json(self, counts, *argv):
+        self.write_counts(counts)
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn", "--output", "out.csv", *argv)
+
+    def test_bad_counts_are_refused_without_output_or_charge(self):
+        for counts, expected in [
+            ({"ssn": 3.9}, "whole number"), ({"ssn": 10.0}, "whole number"), ({"ssn": -5}, "whole number"),
+            ({"ssn": "12"}, "whole number"), ({"ssn": True}, "whole number"), ({"ssn": None}, "whole number"),
+            ({"ssn": 2**63}, "whole number"), ({"ssn": 1, "age": -1}, "age"), ([1, 2], "JSON object"), ("{oops", "not valid JSON"),
+        ]:
+            with self.subTest(counts=counts):
+                code, out, _ = self.run_json(counts)
+                self.assertEqual(code, 1)
+                self.assertIn(expected, out)
+                self.assertFalse(os.path.exists("out.csv"))
+                self.assertFalse(os.path.exists("privacy_budget.json"))
+
+    def test_counts_past_32_bits_are_privatized(self):
+        code, _, err = self.run_json({"ssn": 3000000000}, "--scale", "1")
+        self.assertEqual(code, 0, err)
+        with open("out.csv", newline="") as f:
+            count = int(list(csv.reader(f))[1][1])
+        self.assertLess(abs(count - 3000000000), 1000)
+
+    def test_flags_that_would_be_ignored_are_refused(self):
+        uri = "mongodb://localhost:27017/test_db"
+        source = ["--input", "c.json", "--source", "claims"]
+        for argv, expected in [
+            ([], "One of --input, --philter-url, or --mongo-uri is required"),
+            ([*source, "--mongo-uri", uri], "cannot be used together"),
+            (["--philter-url", "https://x", "--mongo-uri", uri], "cannot be used together"),
+            ([*source, "--aggregates"], "--aggregates requires"),
+            ([*source, "--context", "c"], "--context requires"),
+            (["--mongo-uri", uri, "--context", "c"], "--context requires"),
+            (["--input", "c.json"], "--input requires --source"),
+            (["--philter-url", "https://x", "--source", "claims"], "--source requires --input"),
+            (["--mongo-uri", uri, "--budget-file", "b.json"], "--budget-file cannot be used"),
+        ]:
+            with self.subTest(argv=argv):
+                code, _, err = self.run_main("--pii-types", "ssn", "--output", "out.csv", *argv)
+                self.assertEqual(code, 2)
+                self.assertIn(expected, err)
+
+    def test_numeric_options_are_checked(self):
+        for flag, value in [("--scale", "nan"), ("--scale", "inf"), ("--scale", "0"), ("--scale", "-1"), ("--scale", "x"),
+                            ("--budget-ceiling", "inf"), ("--budget-ceiling", "-1"), ("--threshold", "-1"), ("--threshold", "1.5")]:
+            with self.subTest(flag=flag, value=value):
+                code, _, err = self.run_json({"ssn": 1}, f"{flag}={value}")
+                self.assertEqual(code, 2)
+                self.assertIn(flag, err)
 
 
 if __name__ == "__main__":

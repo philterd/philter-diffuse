@@ -1,0 +1,5 @@
+# Allow only what the image needs, so a local budget file, .git, or test output cannot reach it.
+*
+!main.py
+!requirements.txt
+!LICENSE

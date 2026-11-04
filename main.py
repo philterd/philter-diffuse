@@ -12,19 +12,27 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import contextlib
 import math
 import json
 import argparse
 import csv
 import os
+import shutil
 import ssl
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
 import opendp.prelude as dp
 from pymongo import MongoClient
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows has no flock, so concurrent runs there are not serialized.
 
 # Project version. Philter Diffuse is early-access (0.x): the differential-privacy
 # mechanism and CLI are usable and tested, but the interface may still change
@@ -38,6 +46,14 @@ dp.enable_features("contrib")
 # than a command-line argument so it does not appear in shell history or process listings.
 PHILTER_API_KEY_ENV = "PHILTER_API_KEY"
 
+# Where the budget lives unless --budget-file or this environment variable says otherwise. It is
+# not relative to the working directory: a new directory must not mean a fresh budget.
+BUDGET_FILE_ENV = "PHILTER_DIFFUSE_BUDGET_FILE"
+DEFAULT_BUDGET_FILE = os.path.join("~", ".philter-diffuse", "privacy_budget.json")
+
+# The largest count OpenDP's 64-bit integers hold.
+MAX_COUNT = 2**63 - 1
+
 
 class PhilterApiError(Exception):
     """
@@ -49,6 +65,12 @@ class PhilterApiError(Exception):
 class CountRecordingDisabled(Exception):
     """
     Philter reports that PII count recording (the diffuseCountsEnabled admin setting) is off.
+    """
+
+
+class BudgetExceeded(Exception):
+    """
+    A release would pass the budget ceiling, so nothing was released and nothing was charged.
     """
 
 
@@ -211,7 +233,7 @@ class PhilterDiffuse:
     Provides mathematical guarantees for PII count aggregations.
     """
 
-    def __init__(self, mongo_uri=None, collection_name=None):
+    def __init__(self, mongo_uri=None, collection_name=None, budget_file=None):
         if mongo_uri:
             self.client = MongoClient(mongo_uri)
             # MongoDB URI format: mongodb://host:port/database
@@ -231,7 +253,7 @@ class PhilterDiffuse:
         else:
             self.client = None
             self.collection_name = collection_name or "json_file" # Default label for JSON mode
-            self.budget_file = "privacy_budget.json"
+            self.budget_file = os.path.expanduser(budget_file or os.environ.get(BUDGET_FILE_ENV) or DEFAULT_BUDGET_FILE)
         self.sensitivity = 1  # How much one document can change any one count
 
     def _get_spent_epsilon(self):
@@ -241,31 +263,72 @@ class PhilterDiffuse:
         if self.client:
             record = self.metadata_collection.find_one({"collection": self.collection_name})
             return record.get("spent_epsilon", 0.0) if record else 0.0
-        else:
-            if os.path.exists(self.budget_file):
-                with open(self.budget_file, 'r') as f:
-                    budget_data = json.load(f)
-                    return budget_data.get(self.collection_name, 0.0)
-            return 0.0
+        return self._read_budget_file().get(self.collection_name, 0.0)
 
-    def _update_spent_epsilon(self, new_total):
+    def _read_budget_file(self):
+        if not os.path.exists(self.budget_file):
+            return {}
+        try:
+            with open(self.budget_file, 'r') as f:
+                return json.load(f)
+        except ValueError:
+            # Starting from zero here would discard every earlier charge.
+            raise ValueError(f"The privacy budget file {self.budget_file} is not valid JSON. Restore it from a backup.") from None
+
+    def _write_budget_file(self, budget_data):
         """
-        Updates the total epsilon spent for the current collection.
+        Replaces the file in one step, so a crash cannot leave a truncated budget behind.
+        """
+        descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(self.budget_file)))
+        try:
+            if os.path.exists(self.budget_file):
+                # mkstemp makes the file private; keep whatever access the budget already had.
+                shutil.copymode(self.budget_file, temporary)
+            with os.fdopen(descriptor, 'w') as f:
+                json.dump(budget_data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.budget_file)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.remove(temporary)
+            raise
+
+    @contextlib.contextmanager
+    def _budget_lock(self):
+        os.makedirs(os.path.dirname(os.path.abspath(self.budget_file)), exist_ok=True)
+        with open(f"{self.budget_file}.lock", 'w') as lock:
+            if fcntl:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def _charge(self, epsilon, budget_ceiling):
+        """
+        Adds epsilon to the amount spent, as one step with the ceiling check so that concurrent runs
+        cannot each pass the check on the same balance. Raises BudgetExceeded without charging when
+        the ceiling would be passed.
         """
         if self.client:
-            self.metadata_collection.update_one(
-                {"collection": self.collection_name},
-                {"$set": {"spent_epsilon": new_total}},
-                upsert=True
-            )
+            self.metadata_collection.create_index("collection", unique=True)
+            self.metadata_collection.update_one({"collection": self.collection_name},
+                                                {"$setOnInsert": {"spent_epsilon": 0.0}}, upsert=True)
+            charged = self.metadata_collection.update_one(
+                {"collection": self.collection_name, "spent_epsilon": {"$lte": budget_ceiling - epsilon}},
+                {"$inc": {"spent_epsilon": epsilon}})
+            if charged.modified_count == 1:
+                return
+            spent = self._get_spent_epsilon()
         else:
-            budget_data = {}
-            if os.path.exists(self.budget_file):
-                with open(self.budget_file, 'r') as f:
-                    budget_data = json.load(f)
-            budget_data[self.collection_name] = new_total
-            with open(self.budget_file, 'w') as f:
-                json.dump(budget_data, f)
+            with self._budget_lock():
+                budget_data = self._read_budget_file()
+                spent = budget_data.get(self.collection_name, 0.0)
+                if spent + epsilon <= budget_ceiling:
+                    budget_data[self.collection_name] = spent + epsilon
+                    self._write_budget_file(budget_data)
+                    return
+        raise BudgetExceeded(f"This release costs epsilon {epsilon:g}, and {self.collection_name} has spent "
+                             f"{spent:g} of its budget ceiling of {budget_ceiling:g}. Nothing was released and "
+                             f"no budget was spent. Raise --scale or list fewer types to spend less.")
 
     def fetch_pii_counts(self, pii_fields):
         """
@@ -309,10 +372,20 @@ class PhilterDiffuse:
 
     def load_counts_from_json(self, file_path):
         """
-        Loads raw counts from a JSON file.
+        Loads raw counts from a JSON file. Raises ValueError unless it is a flat object of whole,
+        non-negative counts: truncating or clamping a bad count would release a wrong answer.
         """
         with open(file_path, 'r') as f:
-            return json.load(f)
+            try:
+                raw_counts = json.load(f)
+            except ValueError:
+                raise ValueError(f"{file_path} is not valid JSON.") from None
+        if not isinstance(raw_counts, dict):
+            raise ValueError(f"{file_path} must hold a JSON object of PII types and counts, such as {{\"ssn\": 10}}.")
+        for pii_type, count in raw_counts.items():
+            if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= MAX_COUNT:
+                raise ValueError(f"The count for {pii_type} in {file_path} must be a whole number of 0 or more.")
+        return raw_counts
 
     def write_counts_to_csv(self, private_counts, file_path, threshold=0):
         """
@@ -332,64 +405,42 @@ class PhilterDiffuse:
 
     def privatize_counts(self, raw_counts, scale=2.0, budget_ceiling=10.0):
         """
-        Applies Discrete Laplace noise to counts and calculates Epsilon.
-        Checks against a persistent budget ceiling.
+        Applies Discrete Laplace noise to counts and returns (private_counts, epsilon). Raises
+        BudgetExceeded, releasing nothing, when the release would pass the persistent budget ceiling.
         """
-        # 1. Calculate Epsilon for this query
-        if scale <= 0:
+        if not math.isfinite(scale) or scale <= 0:
             raise ValueError("Scale must be a positive number.")
+
+        keys = list(raw_counts)
+        if not keys:
+            return {}, 0.0
 
         # One document adds at most one to each type's count, but it can add to every type at once,
         # so the counts released together have an L1 sensitivity of one per type. Charging a single
-        # count's epsilon would understate the loss by up to the number of types.
-        keys = list(raw_counts)
+        # count's epsilon would understate the loss by up to the number of types. The keys must be
+        # the declared types (see restrict_to_declared_types), or the charge depends on the data.
         measurement = dp.m.make_laplace(
-            input_domain=dp.vector_domain(dp.atom_domain(T=int)),
-            input_metric=dp.l1_distance(T=int),
+            input_domain=dp.vector_domain(dp.atom_domain(T="i64")),
+            input_metric=dp.l1_distance(T="i64"),
             scale=float(scale)
         )
-        epsilon_this_query = measurement.map(d_in=self.sensitivity * len(keys))
+        epsilon = measurement.map(d_in=self.sensitivity * len(keys))
 
-        # 2. Check Budget
-        spent_epsilon = self._get_spent_epsilon()
-        budget_exhausted = False
-        if (spent_epsilon + epsilon_this_query) > budget_ceiling:
-            # Refuse to execute by using infinite noise
-            # Alternatively, we could raise an error, but the prompt says 
-            # "refuse to execute or automatically increase the noise (scale) to infinite levels"
-            scale = float('inf')
-            epsilon_this_query = 0.0
-            budget_exhausted = True
-            print(f"WARNING: Budget ceiling of {budget_ceiling} exceeded. Infinite noise applied.")
+        # Charge before sampling: a failure after this overcharges, while the reverse could release
+        # counts that were never paid for.
+        self._charge(epsilon, budget_ceiling)
 
-        # 3. Apply the Measurement
-        if math.isinf(scale):
-            # If scale is infinite, all results are just noise, or we can just return 0
-            # but usually infinite noise means we don't return meaningful data.
-            private_results = {k: 0 for k in raw_counts}
-        else:
-            # 4. Privatize and ensure no negative numbers
-            # Cast counts to int for OpenDP compatibility (i32)
-            noisy = measurement([int(raw_counts[k]) for k in keys])
-            private_results = {k: max(0, v) for k, v in zip(keys, noisy)}
+        noisy = measurement([int(raw_counts[k]) for k in keys])
+        return {k: max(0, v) for k, v in zip(keys, noisy)}, epsilon
 
-        # 5. Update Budget if it was a valid query
-        if not math.isinf(scale):
-            self._update_spent_epsilon(spent_epsilon + epsilon_this_query)
-
-        return private_results, epsilon_this_query, budget_exhausted
-
-    def generate_audit_report(self, raw, private, epsilon, csv_file=None, threshold=0, budget_exhausted=False):
+    def generate_audit_report(self, private, epsilon, csv_file=None, threshold=0):
         """
-        Outputs a compliance-ready report for auditors.
+        Prints the audit report for a release. It holds no raw counts: standard output ends up in
+        logs, and exact counts there would undo the noise added to the release.
         """
         print("\n" + "="*40)
         print("PRIVACY AUDIT REPORT")
         print("="*40)
-        if budget_exhausted:
-            print("!!! WARNING: PRIVACY BUDGET EXHAUSTED !!!")
-            print("!!! NO MORE ACCURATE QUERIES ALLOWED !!!")
-            print("-" * 40)
         print(f"Privacy Loss (Epsilon): {epsilon:.4f}")
         print(f"Protection Strength:   {self._interpret_epsilon(epsilon)}")
         print(f"Influence Limit:      e^{epsilon:.2f} ({math.exp(epsilon):.2f}x)")
@@ -398,16 +449,16 @@ class PhilterDiffuse:
         if threshold > 0:
             print(f"Count Threshold:      {threshold}")
         print("-" * 40)
-        print(f"{'PII Type':<15} | {'Raw':<8} | {'Private':<8}")
+        print(f"{'PII Type':<15} | {'Private':<8}")
         print("-" * 40)
-        for key in raw:
+        for key in private:
             # Ensure counts don't display as negative
             safe_count = max(0, private[key])
             
             # Apply threshold
             display_count = "None" if safe_count < threshold else safe_count
             
-            print(f"{key:<15} | {raw[key]:<8} | {display_count:<8}")
+            print(f"{key:<15} | {display_count:<8}")
         
         if csv_file:
             print("-" * 40)
@@ -420,6 +471,60 @@ class PhilterDiffuse:
         if epsilon <= 1.0: return "HIGH"
         if epsilon <= 5.0: return "MODERATE"
         return "LOW (Testing Only)"
+
+def restrict_to_declared_types(raw_counts, pii_types):
+    """
+    Returns (counts, left_out): a count for exactly the declared types, in the declared order, and
+    how many other types the source held. A declared type the source lacks counts as 0.
+
+    The released rows must not depend on the data. A row for each type found would show that at
+    least one document held that type, however much noise its count received, and no epsilon
+    bounds that disclosure.
+    """
+    counts = {pii_type: raw_counts.get(pii_type, 0) for pii_type in pii_types}
+    return counts, len(set(raw_counts) - set(pii_types))
+
+
+def _pii_types(value):
+    """
+    An argparse type for a comma-separated list of PII types. Repeats are dropped, since they would
+    otherwise be charged for a row that is released once.
+    """
+    pii_types = list(dict.fromkeys(name.strip() for name in value.split(",")))
+    if not all(pii_types):
+        raise argparse.ArgumentTypeError(f"'{value}' is not a comma-separated list of PII types, such as ssn,email-address.")
+    return pii_types
+
+
+def _scale(value):
+    """
+    An argparse type for a positive, finite number.
+    """
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a positive number.")
+    return number
+
+
+def _ceiling(value):
+    """
+    An argparse type for a finite number of 0 or more.
+    """
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number of 0 or more.")
+    return number
+
+
+def _threshold(value):
+    """
+    An argparse type for a whole number of 0 or more.
+    """
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a whole number of 0 or more.")
+    return number
+
 
 def _day(value):
     """
@@ -439,11 +544,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Philter Diffuse: Differential Privacy Engine.")
     parser.add_argument("--version", action="version", version=f"Philter Diffuse {__version__}")
     parser.add_argument("--input", type=str, help="Path to a JSON document containing PII entity counts.")
-    parser.add_argument("--mongo-uri", type=str, default="mongodb://localhost:27017/philter", help="MongoDB connection URI (format: mongodb://host:port/database).")
-    parser.add_argument("--scale", type=float, default=2.0, help="Scale for Laplace noise (higher = more privacy, less accuracy).")
+    parser.add_argument("--source", type=str, default=None, metavar="NAME", help="With --input, a name for the dataset the counts come from. The privacy budget is tracked under this name, so keep it the same for every release from that dataset.")
+    parser.add_argument("--mongo-uri", type=str, default=None, help="MongoDB connection URI (format: mongodb://host:port/database).")
+    parser.add_argument("--pii-types", type=_pii_types, required=True, metavar="TYPE[,TYPE...]", help="The PII types to release, comma-separated, such as ssn,email-address. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs 1/scale of epsilon. Choose the list without looking at the counts.")
+    parser.add_argument("--scale", type=_scale, default=2.0, help="Scale for Laplace noise (higher = more privacy, less accuracy).")
     parser.add_argument("--output", type=str, required=True, help="Path to write the privatized PII counts to a CSV file.")
-    parser.add_argument("--threshold", type=int, default=0, help="Counts below this threshold will be output as 'None'.")
-    parser.add_argument("--budget-ceiling", type=float, default=10.0, help="The maximum total epsilon allowed per collection.")
+    parser.add_argument("--threshold", type=_threshold, default=0, help="Counts below this threshold will be output as 'None'.")
+    parser.add_argument("--budget-ceiling", type=_ceiling, default=10.0, help="The maximum total epsilon allowed per collection.")
+    parser.add_argument("--budget-file", type=str, default=None, metavar="PATH", help=f"Where to keep the privacy budget, for sources other than MongoDB. Defaults to the {BUDGET_FILE_ENV} environment variable, then {DEFAULT_BUDGET_FILE}.")
     parser.add_argument("--aggregates", action="store_true", help="Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With --philter-url they are read through Philter's API; otherwise from the pii_count_aggregates collection (deprecated).")
     parser.add_argument("--context", type=str, default=None, help="When reading aggregates, restrict to a single Philter context.")
     parser.add_argument("--philter-url", type=str, default=None, metavar="URL", help=f"Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as https://localhost:8080, instead of from MongoDB. Implies --aggregates. The API key is read from the {PHILTER_API_KEY_ENV} environment variable.")
@@ -453,9 +561,9 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
+    if sum(1 for source in (args.input, args.philter_url, args.mongo_uri) if source) > 1:
+        parser.error("--input, --philter-url, and --mongo-uri cannot be used together.")
     if args.philter_url:
-        if args.input:
-            parser.error("--input and --philter-url cannot be used together.")
         args.aggregates = True
     else:
         if args.date_from or args.date_to:
@@ -464,15 +572,24 @@ def main(argv=None):
             parser.error("--philter-ca-cert requires --philter-url.")
     if args.date_from and args.date_to and args.date_from > args.date_to:
         parser.error("--from must not be after --to.")
-
-    FIELDS_TO_MONITOR = ["creditcard", "ssn", "age", "zipcode"]
+    if args.aggregates and args.input:
+        parser.error("--aggregates requires --philter-url or --mongo-uri.")
+    if args.context is not None and not args.aggregates:
+        parser.error("--context requires --philter-url, or --mongo-uri with --aggregates.")
+    if args.input and not args.source:
+        parser.error("--input requires --source, the name the privacy budget is tracked under.")
+    if args.source and not args.input:
+        parser.error("--source requires --input.")
+    if args.budget_file and args.mongo_uri:
+        parser.error("--budget-file cannot be used with --mongo-uri, which keeps the budget in MongoDB.")
+    if not (args.input or args.philter_url or args.mongo_uri):
+        parser.error("One of --input, --philter-url, or --mongo-uri is required.")
 
     try:
         if args.input:
-            # Initialize Engine without MongoDB for JSON mode
-            # Use the JSON filename as the collection name for budget tracking
-            json_filename = os.path.basename(args.input)
-            engine = PhilterDiffuse(collection_name=json_filename)
+            # The budget is tracked under a declared name, so copying or renaming the file does not
+            # start a fresh budget.
+            engine = PhilterDiffuse(collection_name=args.source, budget_file=args.budget_file)
             print(f"Loading counts from {args.input}...")
             raw_data = engine.load_counts_from_json(args.input)
         elif args.philter_url:
@@ -481,7 +598,7 @@ def main(argv=None):
             try:
                 client = PhilterClient(args.philter_url, os.environ.get(PHILTER_API_KEY_ENV),
                                        ca_cert=args.philter_ca_cert)
-                engine = PhilterDiffuse(collection_name=f"pii_count_aggregates@{client.base_url}")
+                engine = PhilterDiffuse(collection_name=f"pii_count_aggregates@{client.base_url}", budget_file=args.budget_file)
                 print(f"Reading PII counts from Philter at {client.base_url}...")
                 raw_data = client.fetch_pii_count_aggregates(context=args.context, date_from=args.date_from,
                                                              date_to=args.date_to)
@@ -503,23 +620,32 @@ def main(argv=None):
                           file=sys.stderr)
                     raw_data = engine.fetch_pii_count_aggregates(context=args.context)
                 else:
-                    raw_data = engine.fetch_pii_counts(FIELDS_TO_MONITOR)
+                    raw_data = engine.fetch_pii_counts(args.pii_types)
             except Exception as e:
                 print(f"Error: MongoDB connection failed: {e}")
                 sys.exit(1)
 
+        raw_data, left_out = restrict_to_declared_types(raw_data, args.pii_types)
+        if left_out:
+            # A count, not names: this output may be kept where the names would disclose something.
+            print(f"WARNING: {left_out} PII type(s) in the source are not in --pii-types and were left out of this release.", file=sys.stderr)
+
         # 2. Privatize
-        private_data, spent_epsilon, exhausted = engine.privatize_counts(raw_data, scale=args.scale, budget_ceiling=args.budget_ceiling)
+        private_data, spent_epsilon = engine.privatize_counts(raw_data, scale=args.scale, budget_ceiling=args.budget_ceiling)
 
         # 3. Output to CSV
         engine.write_counts_to_csv(private_data, args.output, threshold=args.threshold)
         
         # 4. Report
-        engine.generate_audit_report(raw_data, private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold, budget_exhausted=exhausted)
+        engine.generate_audit_report(private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold)
 
     except SystemExit:
         # Propagate the exit status so a failed run does not look like a successful one.
         raise
+    except BudgetExceeded as e:
+        # Exiting with an error and writing nothing keeps a refusal from reading as a count of zero.
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)

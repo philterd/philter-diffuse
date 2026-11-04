@@ -1,0 +1,50 @@
+name: Docker
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # Builds the image so a broken Dockerfile fails a pull request. Publishing is deliberately not
+  # done here: images are pushed by a person, from a machine holding the credential.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image for every published platform
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A multi-platform image cannot be loaded, so load the runner's own platform to test with.
+      - name: Load the amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: philterd/philter-diffuse:latest
+          cache-from: type=gha
+
+      - name: Smoke test the image
+        run: |
+          test "$(docker run --rm --entrypoint id philterd/philter-diffuse:latest -u)" != "0"
+          docker run --rm --entrypoint sh philterd/philter-diffuse:latest -c 'test ! -e /app/.git && test ! -e /app/test_main.py'
+          mkdir smoke
+          echo '{"ssn": 500}' > smoke/counts.json
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/smoke:/data" philterd/philter-diffuse:latest \
+            --input counts.json --source smoke --pii-types ssn --output out.csv
+          test -s smoke/out.csv
+          test -s smoke/privacy_budget.json

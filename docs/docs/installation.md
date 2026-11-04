@@ -42,7 +42,7 @@ Docker provides an isolated and consistent environment for running Philter Diffu
 From the root of the project directory, build the image:
 
 ```bash
-docker build -t philterdiffuse .
+docker build -t philter-diffuse .
 ```
 
 This will download the base Python image, copy the source code, and install all necessary dependencies inside the container.
@@ -57,13 +57,17 @@ You can run the container manually or use the provided `run-docker.sh` script, w
 ```
 
 **Example: Running manually with volume mounts**
-The image's entrypoint is `main.py`, so arguments after the image name are Philter Diffuse's options. It runs in `/data`: mount a directory there to hold the input, the output, and `privacy_budget.json`.
+The image's entrypoint is `main.py`, so arguments after the image name are Philter Diffuse's options. It runs in `/data`, and the image sets `PHILTER_DIFFUSE_BUDGET_FILE` to `/data/privacy_budget.json`: mount a directory there to hold the input, the output, and the budget.
 ```bash
-docker run --rm -v $(pwd)/data:/data \
-           philterdiffuse \
+docker run --rm --user "$(id -u):$(id -g)" -v $(pwd)/data:/data \
+           philter-diffuse \
            --input pii_counts.json \
+           --source claims-2026 \
+           --pii-types ssn,age,zipcode,creditcard \
            --output privatized_counts.csv
 ```
+
+The image runs as an unprivileged user (UID 1000), not root. `--user "$(id -u):$(id -g)"` runs it as you, so it can write to a directory you own. A Docker named volume needs no `--user`.
 
 Always mount `/data`. The spent privacy budget is kept in `/data/privacy_budget.json`, so without the mount it is lost when the container exits and the next run starts with a fresh budget, which defeats `--budget-ceiling`.
 
@@ -72,11 +76,12 @@ To read counts from a [Philter](https://github.com/philterd/philter) container t
 ```bash
 docker network create philter-net
 docker network connect --alias philter philter-net <philter-container>
-docker run --rm --network philter-net -v $(pwd)/data:/data \
+docker run --rm --network philter-net --user "$(id -u):$(id -g)" -v $(pwd)/data:/data \
            -e PHILTER_API_KEY \
-           philterdiffuse \
+           philter-diffuse \
            --philter-url https://philter:8080 \
            --philter-ca-cert philter.pem \
+           --pii-types ssn,email-address,phone-number \
            --output privatized_counts.csv
 ```
 

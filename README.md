@@ -1,8 +1,10 @@
 # Philter Diffuse
 
-Philter Diffuse provides mathematical guarantees for PII count aggregations using [OpenDP](https://github.com/opendp/opendp).
+Philter Diffuse releases PII count aggregations with differential privacy, using [OpenDP](https://github.com/opendp/opendp), which bounds how much a release reveals about any one document.
 
-It uses the Discrete Laplace mechanism to privatize PII counts and generates compliance-ready reports with epsilon (privacy loss) interpretation. The tool also features persistent privacy budget tracking to prevent privacy loss exhaustion over time.
+It uses the Discrete Laplace mechanism to privatize PII counts and prints an audit report with the epsilon (privacy loss) spent and a plain-language reading of it. The tool also features persistent privacy budget tracking to prevent privacy loss exhaustion over time.
+
+The protected unit is one document: one redaction in Philter, or one record counted by the source. A person who appears in many documents can move a count by as many documents as they appear in, and their protection weakens in proportion: epsilon times that number.
 
 Designed to be used with [Phileas](https://www.github.com/philterd/phileas) and [Philter](https://www.github.com/philterd/philter).
 
@@ -20,18 +22,22 @@ pip install -r requirements.txt
 
 ## Usage
 
-1. **Option A: MongoDB**
-   Ensure MongoDB is running and run:
+Every run names the PII types to release with `--pii-types`. Choose the list before looking at the counts, from your redaction policy or from what your report needs. The output has exactly those rows whether or not the data holds each type, so it does not reveal which types are present. Each type costs `1 / scale` of epsilon.
+
+1. **Option A: Philter's API (recommended)**
+   With Philter 4.0 or later, recording PII counts:
    ```bash
-   python main.py --mongo-uri "mongodb://localhost:27017/analytics_db" --output privatized_counts.csv
+   export PHILTER_API_KEY=<api key>
+   python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
    ```
+   See [Reading Philter's PII counts](#reading-philters-pii-counts).
 
 2. **Option B: JSON file**
    Provide a JSON document with PII entity counts:
    ```bash
-   python main.py --input pii_counts.json --output privatized_counts.csv
+   python main.py --input pii_counts.json --source claims-2026 --pii-types ssn,age,zipcode,creditcard --output privatized_counts.csv
    ```
-   Sample `pii_counts.json`:
+   `--source` names the dataset, and the privacy budget is tracked under that name. Sample `pii_counts.json`, a flat object of whole counts of 0 or more:
    ```json
    {
      "ssn": 10,
@@ -41,10 +47,10 @@ pip install -r requirements.txt
    }
    ```
 
-3. **Export to CSV**
-   You can export privatized counts to a CSV file:
+3. **Option C: MongoDB**
+   Count the documents in the `pii_counts` collection that have each listed field:
    ```bash
-   python main.py --input pii_counts.json --output privatized_counts.csv
+   python main.py --mongo-uri "mongodb://localhost:27017/analytics_db" --pii-types ssn,age,zipcode --output privatized_counts.csv
    ```
 
 4. **Using Docker**
@@ -56,20 +62,23 @@ pip install -r requirements.txt
 
 ## Privacy Budget Management
 
-Philter Diffuse tracks the total epsilon spent per collection (or JSON source) in a persistent metadata store. When using MongoDB, it is stored in the `privacy_metadata` collection. Otherwise (JSON input, or reading counts through Philter's API), it is stored in a local file named `privacy_budget.json`.
+Philter Diffuse tracks the total epsilon spent per source in a persistent store. When using MongoDB, it is stored in the `privacy_metadata` collection. Otherwise (JSON input, or reading counts through Philter's API), it is stored in `~/.philter-diffuse/privacy_budget.json`, or the file named by `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable. JSON input is tracked under its `--source` name, so a renamed or copied file keeps its budget.
 
-If the `--budget-ceiling` is reached, the tool will notify the user, apply infinite noise (effectively zeroing out or thresholding the results), and refuse to release further accurate information to protect privacy.
+If a release would pass the `--budget-ceiling`, the tool exits with an error (exit code `1`), writes no output, leaves any existing `--output` file unchanged, and spends no budget.
 
 ## CLI Options
 
 | Option | Description | Required? | Default |
 |--------|-------------|-----------|---------|
-| `--input` | Path to a JSON document containing PII entity counts. | Optional | None |
-| `--mongo-uri` | MongoDB connection URI (format: `mongodb://host:port/database`). | Optional | `mongodb://localhost:27017/philter` |
+| `--input` | Path to a JSON document containing PII entity counts. One of `--input`, `--philter-url`, or `--mongo-uri` is required. | Optional | None |
+| `--source` | With `--input`, a name for the dataset the counts come from. The privacy budget is tracked under this name, so keep it the same for every release from that dataset. | With `--input` | None |
+| `--mongo-uri` | MongoDB connection URI (format: `mongodb://host:port/database`). | Optional | None |
+| `--pii-types` | The PII types to release, comma-separated, such as `ssn,email-address`. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs `1 / scale` of epsilon. See [Choosing the PII types](https://philterd.github.io/philter-diffuse/usage/#choosing-the-pii-types). | **Required** | None |
 | `--scale` | Scale for Laplace noise (higher = more privacy). | Optional | `2.0` |
 | `--output` | Path to write the privatized PII counts to a CSV file. | **Required** | None |
 | `--threshold` | Counts below this threshold will be output as `None`. | Optional | `0` |
-| `--budget-ceiling` | The maximum total epsilon allowed per collection. | Optional | `10.0` |
+| `--budget-ceiling` | The maximum total epsilon allowed per source. | Optional | `10.0` |
+| `--budget-file` | Where to keep the privacy budget, for sources other than MongoDB. | Optional | `PHILTER_DIFFUSE_BUDGET_FILE`, then `~/.philter-diffuse/privacy_budget.json` |
 | `--aggregates` | Read [Philter's](https://www.github.com/philterd/philter) aggregated, document-presence PII counts (summing the count buckets that Philter records per user's `(context, day)`) instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | Optional | off |
 | `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | Optional | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | Optional | None |
@@ -79,7 +88,7 @@ If the `--budget-ceiling` is reached, the tool will notify the user, apply infin
 
 ### Reading Philter's PII counts
 
-When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per user's `(context, day)`. These are document-presence counts: each redaction contributes at most one per type, so each count has a sensitivity of 1. A redaction can contribute to several types, so a query is charged one `1 / scale` per type it releases.
+When Philter is configured to record PII count statistics (its `diffuseCountsEnabled` admin setting, off by default), it records document-presence counts, one entry per user's `(context, day)`. These are document-presence counts: each redaction contributes at most one per type, so each count has a sensitivity of 1. A redaction can contribute to several types, so a query is charged one `1 / scale` per type in `--pii-types`.
 
 #### Through Philter's API (recommended, Philter 4.0 or later)
 
@@ -87,7 +96,7 @@ Philter 4.0 serves the counts at `GET /api/pii-counts`, so Philter Diffuse needs
 
 ```bash
 export PHILTER_API_KEY=<api key>
-python main.py --philter-url https://localhost:8080 --aggregates --output privatized_counts.csv
+python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
 ```
 
 * The key must hold the `pii-counts:read` scope, and its user must be a Philter **administrator**, because the counts cover the whole deployment. Philter records each read in its audit log.
@@ -95,14 +104,14 @@ python main.py --philter-url https://localhost:8080 --aggregates --output privat
 * If Philter reports that count recording is turned off, Philter Diffuse says so and exits without writing privatized output or spending privacy budget, rather than privatizing an empty or partial result as if no PII had been found.
 * If Philter refuses the request (missing scope, not an administrator, invalid key) or cannot be reached, Philter Diffuse prints the reason and Philter's request ID when one is returned, so the request can be found in Philter's audit log.
 * Certificates are verified. Philter's Docker image generates a self-signed certificate; to trust it, export it and pass it with `--philter-ca-cert philter.pem` rather than turning verification off. Redirects are not followed, so the API key is only ever sent to the URL you give.
-* The privacy budget for API reads is tracked in the local `privacy_budget.json`, keyed by the Philter URL (`pii_count_aggregates@https://localhost:8080`). No MongoDB connection is made. Moving from the MongoDB path starts a new budget entry: copy the epsilon already spent (in MongoDB's `privacy_metadata` collection) into it so earlier releases still count against the ceiling.
+* The privacy budget for API reads is tracked in the budget file, not in Philter's database, keyed by the Philter URL (`pii_count_aggregates@https://localhost:8080`). No MongoDB connection is made. Moving from the MongoDB path starts a new budget entry: copy the epsilon already spent (in MongoDB's `privacy_metadata` collection) into the budget file so earlier releases still count against the ceiling.
 
 #### From MongoDB (deprecated)
 
 Philter Diffuse can still read the `pii_count_aggregates` collection directly from Philter's MongoDB:
 
 ```bash
-python main.py --mongo-uri "mongodb://localhost:27017/philter" --aggregates --output privatized_counts.csv
+python main.py --mongo-uri "mongodb://localhost:27017/philter" --aggregates --pii-types ssn,email-address,phone-number --output privatized_counts.csv
 ```
 
 This path is deprecated and prints a warning naming `--philter-url`. It depends on Philter's internal storage layout and on MongoDB storage, and it will be removed in a future release. Move to `--philter-url` once you run Philter 4.0 or later.

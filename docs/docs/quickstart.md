@@ -39,7 +39,9 @@ The keys are PII types and the values are raw counts (for example, 8 documents c
 ```bash
 python main.py \
   --input pii_counts.json \
+  --source quickstart \
   --output privatized_counts.csv \
+  --pii-types ssn,creditcard,age,zipcode,date \
   --scale 2.0 \
   --threshold 5
 ```
@@ -47,8 +49,10 @@ python main.py \
 What each flag does:
 
 - `--input` reads the raw counts from your JSON file.
+- `--source` names the dataset. The privacy budget is tracked under this name, so renaming the file does not reset it.
 - `--output` writes the differentially private counts to a CSV.
-- `--scale 2.0` sets the noise level. Each PII type in the input costs `1 / scale`, because one document can add to every type at once, so these five types spend `5 / 2.0 = 2.5`.
+- `--pii-types` names the types to release. The output has exactly these rows whether or not the input holds each type, so choose the list before looking at the counts.
+- `--scale 2.0` sets the noise level. Each listed PII type costs `1 / scale`, because one document can add to every type at once, so these five types spend `5 / 2.0 = 2.5`.
 - `--threshold 5` masks any privatized count below 5 as `None`, protecting small cohorts.
 
 ## 4. Read the audit report
@@ -65,19 +69,19 @@ Influence Limit:      e^2.50 (12.18x)
 Output File:          privatized_counts.csv
 Count Threshold:      5
 ----------------------------------------
-PII Type        | Raw      | Private
+PII Type        | Private
 ----------------------------------------
-ssn             | 8        | 9
-creditcard      | 15       | 14
-age             | 120      | 122
-zipcode         | 45       | 49
-date            | 3        | None
+ssn             | 9
+creditcard      | 14
+age             | 122
+zipcode         | 49
+date            | None
 ----------------------------------------
 ```
 
 - **Privacy Loss (Epsilon)** is the budget spent by this query.
 - **Protection Strength** is a plain-language reading of epsilon (`MODERATE` here). Raise `--scale` for stronger protection: `--scale 10` spends `0.5` on these five types.
-- The **Raw vs. Private** table is for your eyes only. Only the private column is safe to share.
+- The table shows the private counts, the same values as the CSV. The report never prints raw counts, so it is safe in logs.
 - `date` shows `None` because its privatized count fell below the threshold of 5.
 
 ## 5. Inspect the CSV
@@ -102,14 +106,14 @@ This CSV is the artifact you can hand to analysts, auditors, or a downstream das
 Philter Diffuse remembers how much epsilon you have spent against each source. Run the same command again and look at the budget file it created:
 
 ```bash
-cat privacy_budget.json
+cat ~/.philter-diffuse/privacy_budget.json
 ```
 
 ```json
-{"pii_counts.json": 5.0}
+{"quickstart": 5.0}
 ```
 
-Two runs at `--scale 2.0` have spent `2.5 + 2.5 = 5.0`. The default ceiling is `10.0`; once cumulative epsilon would cross it, Philter Diffuse stops releasing accurate numbers and applies infinite noise. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
+Two runs at `--scale 2.0` have spent `2.5 + 2.5 = 5.0`. The default ceiling is `10.0`; once cumulative epsilon would cross it, Philter Diffuse refuses the run: it exits with an error and writes no output. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
 
 ## Next steps
 

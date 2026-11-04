@@ -1,2 +1,2 @@
-opendp>=0.9.0
+opendp>=0.9.0,<0.17
 pymongo>=4.0.0

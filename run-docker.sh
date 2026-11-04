@@ -20,10 +20,13 @@ fi
 echo "Running Philter Diffuse in Docker..."
 
 docker run --rm \
+  --user "$(id -u):$(id -g)" \
   -v "$(pwd)":/data \
   philter-diffuse \
   --input sample_counts.json \
+  --source sample \
   --output docker_privatized_counts.csv \
-  --threshold 5
+  --threshold 5 \
+  --pii-types creditcard,ssn,age,zipcode,date
 
 echo "Docker run complete. Output written to docker_privatized_counts.csv, budget to privacy_budget.json"
