@@ -51,7 +51,14 @@ To assist non-technical auditors, Philter Diffuse provides a qualitative interpr
 ## Managing the Budget
 
 ### Resetting the Budget
-If you have refreshed your underlying dataset (e.g., a new month of data) and wish to reset the budget:
+The budget covers every document in a source, and it does not renew. Resetting it is sound only when later releases leave out every document an earlier release covered. A release of new data that still includes the old data adds to the privacy loss of the old documents, so resetting the budget before it removes the protection the ceiling provides.
+
+*   **Philter API**: Philter's counts accumulate, so a read without `--from` and `--to` includes every earlier day. After a reset, limit every release with `--from` to days after the last release. Philter Diffuse does not check this.
+*   **JSON**: A dataset with no documents in common with an earlier one needs no reset: give it a new `--source` name.
+
+The bound stays per document, so a person who appears in documents on both sides of a reset is exposed to both sets of releases.
+
+To reset the budget:
 *   **MongoDB**: Delete the document for that collection in the `privacy_metadata` collection.
 *   **JSON or Philter API**: Edit the budget file and remove the entry for your `--source` name or Philter URL, or delete the file entirely.
 

@@ -56,7 +56,7 @@ If you run the same query multiple times on the same data, an attacker could pot
 The budget file is `~/.philter-diffuse/privacy_budget.json`, unless `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable names another.
 
 ### How can I reset the privacy budget?
-If you are in a development or testing environment and wish to reset the budget:
+In a development or testing environment, reset the budget as follows. In production, see [Resetting the Budget](privacy-budget.md#resetting-the-budget) first.
 *   In MongoDB: Drop the `privacy_metadata` collection or delete the specific document for your collection.
 *   In JSON or Philter API mode: Remove the entry from the budget file, or delete the file.
 *   **Note**: In production, resetting the budget should be done with extreme caution as it potentially invalidates the privacy bound on the underlying documents.
