@@ -227,6 +227,35 @@ class PhilterClient:
         return message
 
 
+def _daily_ledger(entry):
+    """
+    Reads a budget file entry kept per UTC day: the epsilon spent on every day, and the window and
+    epsilon of each release charged since.
+    """
+    if entry is None:
+        return {"spent_on_every_day": 0.0, "releases": []}
+    if isinstance(entry, dict):
+        return entry
+    # A 0.1.0 entry is one running total with no days. Counting it as spent on every day means
+    # upgrading cannot give a release more budget than it had before.
+    return {"spent_on_every_day": entry, "releases": []}
+
+
+def _busiest_day(ledger, first_day, last_day):
+    """
+    Returns the day from first_day to last_day, both inclusive, with the most epsilon spent, and that
+    amount. What a day has spent only rises on the first day of a release's window, so those days and
+    first_day are the only ones to check. Days are YYYY-MM-DD, so they compare as strings.
+    """
+    def spent_on(day):
+        return ledger["spent_on_every_day"] + sum(
+            release["epsilon"] for release in ledger["releases"] if release["from"] <= day <= release["to"])
+
+    days = [first_day] + sorted(release["from"] for release in ledger["releases"]
+                                if first_day < release["from"] <= last_day)
+    return max(((day, spent_on(day)) for day in days), key=lambda day_spent: day_spent[1])
+
+
 class PhilterDiffuse:
     """
     Differential Privacy Engine for MongoDB.
@@ -302,11 +331,16 @@ class PhilterDiffuse:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
-    def _charge(self, epsilon, budget_ceiling):
+    def _charge(self, epsilon, budget_ceiling, window=None):
         """
         Adds epsilon to the amount spent, as one step with the ceiling check so that concurrent runs
         cannot each pass the check on the same balance. Raises BudgetExceeded without charging when
         the ceiling would be passed.
+
+        With a window, a (from, to) pair of UTC days, the budget file keeps the amount spent per day:
+        the release is charged to every day in the window, and the ceiling applies to each day. A
+        document is recorded under one day, so only the releases whose windows include that day add
+        to its privacy loss.
         """
         if self.client:
             self.metadata_collection.create_index("collection", unique=True)
@@ -321,6 +355,18 @@ class PhilterDiffuse:
         else:
             with self._budget_lock():
                 budget_data = self._read_budget_file()
+                if window:
+                    ledger = _daily_ledger(budget_data.get(self.collection_name))
+                    day, spent = _busiest_day(ledger, *window)
+                    if spent + epsilon <= budget_ceiling:
+                        ledger["releases"].append({"from": window[0], "to": window[1], "epsilon": epsilon})
+                        budget_data[self.collection_name] = ledger
+                        self._write_budget_file(budget_data)
+                        return
+                    raise BudgetExceeded(f"This release costs epsilon {epsilon:g}, and {day} has spent {spent:g} "
+                                         f"of its budget ceiling of {budget_ceiling:g} at {self.collection_name}. "
+                                         f"Nothing was released and no budget was spent. Raise --scale or list "
+                                         f"fewer types to spend less, or release days with budget left.")
                 spent = budget_data.get(self.collection_name, 0.0)
                 if spent + epsilon <= budget_ceiling:
                     budget_data[self.collection_name] = spent + epsilon
@@ -403,10 +449,11 @@ class PhilterDiffuse:
                 
                 writer.writerow([key, display_count])
 
-    def privatize_counts(self, raw_counts, scale=2.0, budget_ceiling=10.0):
+    def privatize_counts(self, raw_counts, scale=2.0, budget_ceiling=10.0, window=None):
         """
         Applies Discrete Laplace noise to counts and returns (private_counts, epsilon). Raises
         BudgetExceeded, releasing nothing, when the release would pass the persistent budget ceiling.
+        With a window, a (from, to) pair of UTC days, the ceiling applies to each day in it.
         """
         if not math.isfinite(scale) or scale <= 0:
             raise ValueError("Scale must be a positive number.")
@@ -428,7 +475,7 @@ class PhilterDiffuse:
 
         # Charge before sampling: a failure after this overcharges, while the reverse could release
         # counts that were never paid for.
-        self._charge(epsilon, budget_ceiling)
+        self._charge(epsilon, budget_ceiling, window)
 
         noisy = measurement([int(raw_counts[k]) for k in keys])
         return {k: max(0, v) for k, v in zip(keys, noisy)}, epsilon
@@ -550,14 +597,14 @@ def main(argv=None):
     parser.add_argument("--scale", type=_scale, default=2.0, help="Scale for Laplace noise (higher = more privacy, less accuracy).")
     parser.add_argument("--output", type=str, required=True, help="Path to write the privatized PII counts to a CSV file.")
     parser.add_argument("--threshold", type=_threshold, default=0, help="Counts below this threshold will be output as 'None'.")
-    parser.add_argument("--budget-ceiling", type=_ceiling, default=10.0, help="The maximum total epsilon allowed per collection.")
+    parser.add_argument("--budget-ceiling", type=_ceiling, default=10.0, help="The maximum total epsilon allowed per source, and with --philter-url per UTC day.")
     parser.add_argument("--budget-file", type=str, default=None, metavar="PATH", help=f"Where to keep the privacy budget, for sources other than MongoDB. Defaults to the {BUDGET_FILE_ENV} environment variable, then {DEFAULT_BUDGET_FILE}.")
     parser.add_argument("--aggregates", action="store_true", help="Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With --philter-url they are read through Philter's API; otherwise from the pii_count_aggregates collection (deprecated).")
     parser.add_argument("--context", type=str, default=None, help="When reading aggregates, restrict to a single Philter context.")
     parser.add_argument("--philter-url", type=str, default=None, metavar="URL", help=f"Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as https://localhost:8080, instead of from MongoDB. Implies --aggregates. The API key is read from the {PHILTER_API_KEY_ENV} environment variable.")
     parser.add_argument("--philter-ca-cert", type=str, default=None, metavar="PEM_FILE", help="With --philter-url, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate.")
-    parser.add_argument("--from", dest="date_from", type=_day, default=None, metavar="YYYY-MM-DD", help="With --philter-url, read only counts for this UTC day or later.")
-    parser.add_argument("--to", dest="date_to", type=_day, default=None, metavar="YYYY-MM-DD", help="With --philter-url, read only counts for this UTC day or earlier.")
+    parser.add_argument("--from", dest="date_from", type=_day, default=None, metavar="YYYY-MM-DD", help="Required with --philter-url. Read only counts for this UTC day or later. The release is charged to the privacy budget of every day from --from to --to.")
+    parser.add_argument("--to", dest="date_to", type=_day, default=None, metavar="YYYY-MM-DD", help="Required with --philter-url. Read only counts for this UTC day or earlier.")
 
     args = parser.parse_args(argv)
 
@@ -584,6 +631,9 @@ def main(argv=None):
         parser.error("--budget-file cannot be used with --mongo-uri, which keeps the budget in MongoDB.")
     if not (args.input or args.philter_url or args.mongo_uri):
         parser.error("One of --input, --philter-url, or --mongo-uri is required.")
+    if args.philter_url and not (args.date_from and args.date_to):
+        parser.error("--philter-url requires --from and --to. The release is charged to the privacy budget of "
+                     "each UTC day from one to the other.")
 
     try:
         if args.input:
@@ -593,8 +643,8 @@ def main(argv=None):
             print(f"Loading counts from {args.input}...")
             raw_data = engine.load_counts_from_json(args.input)
         elif args.philter_url:
-            # Read through Philter's API. No MongoDB connection is made: the budget is tracked in
-            # the local budget file, keyed by the Philter deployment the counts came from.
+            # Read through Philter's API. No MongoDB connection is made: the budget is tracked per
+            # UTC day in the local budget file, keyed by the Philter deployment the counts came from.
             try:
                 client = PhilterClient(args.philter_url, os.environ.get(PHILTER_API_KEY_ENV),
                                        ca_cert=args.philter_ca_cert)
@@ -631,7 +681,9 @@ def main(argv=None):
             print(f"WARNING: {left_out} PII type(s) in the source are not in --pii-types and were left out of this release.", file=sys.stderr)
 
         # 2. Privatize
-        private_data, spent_epsilon = engine.privatize_counts(raw_data, scale=args.scale, budget_ceiling=args.budget_ceiling)
+        window = (args.date_from, args.date_to) if args.philter_url else None
+        private_data, spent_epsilon = engine.privatize_counts(raw_data, scale=args.scale,
+                                                              budget_ceiling=args.budget_ceiling, window=window)
 
         # 3. Output to CSV
         engine.write_counts_to_csv(private_data, args.output, threshold=args.threshold)

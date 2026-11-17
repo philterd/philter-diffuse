@@ -511,6 +511,8 @@ class TestPhilterApi(TempDirTestCase):
         """
         if "--pii-types" not in argv:
             argv = ("--pii-types", "SSN,PERSON") + argv
+        if "--philter-url" in argv and "--from" not in argv and "--to" not in argv:
+            argv = argv + ("--from", "2026-09-01", "--to", "2026-09-30")
         env = {k: v for k, v in os.environ.items() if k != PHILTER_API_KEY_ENV}
         if api_key is not None:
             env[PHILTER_API_KEY_ENV] = api_key
@@ -654,7 +656,9 @@ class TestPhilterApi(TempDirTestCase):
         with open("out.csv", newline="") as f:
             self.assertEqual(sorted(row[0] for row in list(csv.reader(f))[1:]), ["PERSON", "SSN"])
         with open("privacy_budget.json") as f:
-            self.assertEqual(json.load(f), {f"pii_count_aggregates@{philter.url}": 1.0})
+            self.assertEqual(json.load(f), {f"pii_count_aggregates@{philter.url}": {
+                "spent_on_every_day": 0.0,
+                "releases": [{"from": "2026-09-01", "to": "2026-09-30", "epsilon": 1.0}]}})
         self.assertNotIn("deprecated", err)
 
     def test_cli_never_prints_the_api_key(self):
@@ -817,6 +821,134 @@ class TestPhilterApi(TempDirTestCase):
         self.assertIn("deprecated", err.getvalue())
         self.assertIn("--philter-url", err.getvalue())
         self.assertTrue(os.path.exists("out.csv"))
+
+
+class TestDailyBudget(TempDirTestCase):
+    """
+    With --philter-url, the budget is kept per UTC day. Two types at the default scale of 2.0 cost
+    epsilon 1.0 per release.
+    """
+
+    run_cli = TestPhilterApi.run_cli
+
+    def release(self, philter, first_day, last_day, ceiling="1.0"):
+        return self.run_cli("--philter-url", philter.url, "--from", first_day, "--to", last_day,
+                            "--budget-ceiling", ceiling, "--output", "out.csv")
+
+    def ledger(self, philter):
+        with open("privacy_budget.json") as f:
+            return json.load(f)[f"pii_count_aggregates@{philter.url}"]
+
+    def spent_on(self, philter, day):
+        return main._busiest_day(self.ledger(philter), day, day)[1]
+
+    def test_every_day_in_the_window_is_charged(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            code, _, err = self.release(philter, "2026-09-01", "2026-09-30")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(self.ledger(philter), {
+                "spent_on_every_day": 0.0,
+                "releases": [{"from": "2026-09-01", "to": "2026-09-30", "epsilon": 1.0}]})
+            for day, spent in (("2026-08-31", 0.0), ("2026-09-01", 1.0), ("2026-09-30", 1.0), ("2026-10-01", 0.0)):
+                self.assertEqual(self.spent_on(philter, day), spent, day)
+
+    def test_releases_over_separate_windows_each_spend_up_to_the_ceiling(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            for first_day, last_day in (("2026-09-01", "2026-09-30"), ("2026-10-01", "2026-10-31")):
+                code, _, err = self.release(philter, first_day, last_day)
+                self.assertEqual(code, 0, err)
+            code, _, err = self.release(philter, "2026-09-30", "2026-10-01")
+            self.assertEqual(code, 1)
+            self.assertIn("2026-09-30 has spent 1", err)
+
+    def test_overlapping_releases_are_charged_twice_on_the_days_they_share(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            for first_day, last_day in (("2026-09-01", "2026-09-30"), ("2026-09-15", "2026-10-15")):
+                code, _, err = self.release(philter, first_day, last_day, ceiling="2.0")
+                self.assertEqual(code, 0, err)
+            for day, spent in (("2026-09-14", 1.0), ("2026-09-15", 2.0), ("2026-09-30", 2.0), ("2026-10-01", 1.0)):
+                self.assertEqual(self.spent_on(philter, day), spent, day)
+            code, _, err = self.release(philter, "2026-09-20", "2026-09-20", ceiling="2.0")
+            self.assertEqual(code, 1)
+            code, _, err = self.release(philter, "2026-10-10", "2026-10-31", ceiling="2.0")
+            self.assertEqual(code, 0, err)
+
+    def test_refusal_names_the_day_and_writes_and_charges_nothing(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            self.assertEqual(self.release(philter, "2026-09-10", "2026-09-20")[0], 0)
+            os.remove("out.csv")
+            before = self.ledger(philter)
+            code, out, err = self.release(philter, "2026-09-01", "2026-09-30")
+            self.assertEqual(code, 1)
+            self.assertIn("2026-09-10 has spent 1 of its budget ceiling of 1", err)
+            self.assertFalse(os.path.exists("out.csv"))
+            self.assertNotIn("PRIVACY AUDIT REPORT", out)
+            self.assertEqual(self.ledger(philter), before)
+
+    def test_philter_url_requires_from_and_to(self):
+        for dates in ([], ["--from", "2026-09-01"], ["--to", "2026-09-30"]):
+            with self.subTest(dates=dates):
+                code, _, err = self.run_main("--philter-url", "https://localhost:8080", "--pii-types", "SSN",
+                                             "--output", "out.csv", *dates)
+                self.assertEqual(code, 2)
+                self.assertIn("--philter-url requires --from and --to", err)
+
+    def test_a_0_1_0_entry_counts_as_spent_on_every_day(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            key = f"pii_count_aggregates@{philter.url}"
+            self.write_counts({key: 9.5}, "privacy_budget.json")
+            code, _, err = self.release(philter, "2026-09-01", "2026-09-30", ceiling="10")
+            self.assertEqual(code, 1)
+            self.assertIn("2026-09-01 has spent 9.5", err)
+
+            self.write_counts({key: 9.0}, "privacy_budget.json")
+            code, _, err = self.release(philter, "2026-09-01", "2026-09-30", ceiling="10")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(self.ledger(philter), {
+                "spent_on_every_day": 9.0,
+                "releases": [{"from": "2026-09-01", "to": "2026-09-30", "epsilon": 1.0}]})
+            self.assertEqual(self.release(philter, "2026-09-30", "2026-10-31", ceiling="10")[0], 1)
+
+    def test_concurrent_releases_never_pass_the_ceiling_on_any_day(self):
+        windows = [("2026-09-01", "2026-09-30"), ("2026-09-15", "2026-10-15")]
+        def charge(i):
+            try:
+                PhilterDiffuse(collection_name="deployment", budget_file="budget.json")._charge(
+                    1.0, 5.0, windows[i % 2])
+                return True
+            except BudgetExceeded:
+                return False
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(charge, range(32)))
+        # Both windows hold 2026-09-15 to 2026-09-30, so five releases in all fit under the ceiling.
+        self.assertEqual(sum(results), 5)
+        with open("budget.json") as f:
+            ledger = json.load(f)["deployment"]
+        self.assertLessEqual(main._busiest_day(ledger, "2026-09-01", "2026-10-15")[1], 5.0)
+
+    def test_the_charge_to_a_day_is_the_composed_loss_of_the_releases_that_read_it(self):
+        # A document is recorded under one day, so it is in the counts of exactly the releases whose
+        # windows hold that day. Composing those releases' measurements gives its privacy loss.
+        releases = [("2026-09-01", "2026-09-30", 2.0), ("2026-09-15", "2026-10-15", 4.0),
+                    ("2026-09-20", "2026-09-20", 1.0), ("2026-10-01", "2026-10-31", 8.0)]
+        pii_types = ["SSN", "PERSON", "EMAIL"]
+        engine = PhilterDiffuse(collection_name="deployment", budget_file="budget.json")
+        for first_day, last_day, scale in releases:
+            engine.privatize_counts({t: 10 for t in pii_types}, scale=scale, budget_ceiling=100.0,
+                                    window=(first_day, last_day))
+        with open("budget.json") as f:
+            ledger = json.load(f)["deployment"]
+
+        compose = getattr(main.dp.c, "make_composition", None) or main.dp.c.make_basic_composition
+        def laplace(scale):
+            return main.dp.m.make_laplace(input_domain=main.dp.vector_domain(main.dp.atom_domain(T="i64")),
+                                          input_metric=main.dp.l1_distance(T="i64"), scale=scale)
+        for day in ("2026-08-31", "2026-09-01", "2026-09-15", "2026-09-20", "2026-09-30", "2026-10-01",
+                    "2026-10-15", "2026-10-16", "2026-11-01"):
+            with self.subTest(day=day):
+                reading = [scale for first_day, last_day, scale in releases if first_day <= day <= last_day]
+                loss = compose([laplace(scale) for scale in reading]).map(len(pii_types)) if reading else 0.0
+                self.assertAlmostEqual(main._busiest_day(ledger, day, day)[1], loss)
 
 
 class TestDeclaredTypes(TempDirTestCase):
