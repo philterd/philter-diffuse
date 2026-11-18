@@ -59,9 +59,58 @@ If a requested query would cause the total spent epsilon to exceed the ceiling, 
 2.  **No Output**: No counts are released. Any existing `--output` file is left unchanged, and no report is printed.
 3.  **No Budget Consumption**: Nothing is deducted from the remaining budget.
 
+## Checking the Budget
+
+`--budget-status` prints what each source in the budget file has spent and has left against `--budget-ceiling`, and exits. Add `--budget-file` to read another budget file, or `--mongo-uri` to read MongoDB's `privacy_metadata` collection instead. It reads no counts, makes no request to Philter, needs no `--pii-types` or `--output`, and changes nothing.
+
+```bash
+python main.py --budget-status
+```
+
+```text
+Privacy budget in /home/user/.philter-diffuse/privacy_budget.json, against a ceiling of 10:
+claims-2026: spent 5, remaining 5
+pii_count_aggregates@https://localhost:8080, per UTC day:
+  2026-09-01 to 2026-09-14: spent 1.5, remaining 8.5
+  2026-09-15 to 2026-09-30: spent 3, remaining 7
+  2026-10-01 to 2026-10-15: spent 1.5, remaining 8.5
+  every other day: spent 0, remaining 10
+```
+
+A Philter deployment's budget is kept per day, so it is listed by runs of days that have spent the same, and `every other day` covers the rest. The ceiling is not stored with the budget, so pass the `--budget-ceiling` your releases use.
+
+The audit report of each release also gives the budget spent and remaining after it. With `--philter-url`, these are for the day from `--from` to `--to` that has spent the most, which the report names.
+
+### Warning before the ceiling
+
+A release that leaves its source past 80% of `--budget-ceiling` prints a warning on standard error. With `--philter-url`, it names the day:
+
+```text
+WARNING: 2026-09-15 has spent 8.5 of its budget ceiling of 10 at pii_count_aggregates@https://localhost:8080, past the warning share of 80%.
+```
+
+Every release that ends past the share warns, not only the first. Set another share, from 0 to 1, with `--budget-warning-share`. A share of `1` never warns, since a release cannot pass the ceiling.
+
+## Release Log
+
+Each release adds one entry to a release log next to the budget:
+
+*   **Budget file**: `privacy_budget.releases.jsonl`, in the same directory as the budget file. It takes the budget file's name, with `.releases.jsonl` in place of its extension, and holds one JSON object per line. A new log gets the budget file's permissions.
+*   **MongoDB**: the `privacy_releases` collection, next to `privacy_metadata`.
+
+```json
+{"time": "2026-09-30T18:04:11Z", "source": "pii_count_aggregates@https://localhost:8080", "epsilon": 1.5, "scale": 2.0, "pii_types": ["ssn", "email-address", "phone-number"], "from": "2026-09-01", "to": "2026-09-30"}
+```
+
+An entry gives the time of the release in UTC, the source, the epsilon charged, the scale, the declared types, and with `--philter-url` the window. It holds no counts, raw or private.
+
+The entry is written right after the charge, under the same lock, so concurrent runs cannot lose each other's entries, and a refused release adds none. The log file is replaced in one step, like the budget file, so a crash leaves it as it was. If a run stops between the charge and its entry, the release is charged but not logged, and nothing is released. On Windows, concurrent runs against one budget file are not serialized, so run them one at a time.
+
+The log is a record of what was released, not the budget: Philter Diffuse never reads it to decide what a release may spend. Resetting a budget does not remove that source's entries.
+
 ## Interpreting Protection Strength
 
-To assist non-technical auditors, Philter Diffuse provides a qualitative interpretation of the privacy loss of each query (not the cumulative total, which is in the budget store):
+To assist non-technical auditors, Philter Diffuse provides a qualitative interpretation of the privacy loss of each query (not the cumulative total, which the report gives as the budget spent):
 
 | Query Epsilon ($\epsilon$) | Protection Strength | Description |
 | :--- | :--- | :--- |

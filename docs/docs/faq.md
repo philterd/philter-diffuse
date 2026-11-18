@@ -53,7 +53,7 @@ If you run the same query multiple times on the same data, an attacker could pot
 *   **Philter API Mode** (`--philter-url`): The budget is stored in the budget file, keyed by the Philter URL, and kept per UTC day. Nothing is written to Philter's database.
 *   **JSON Mode**: The budget is stored in the budget file, keyed by the `--source` name.
 
-The budget file is `~/.philter-diffuse/privacy_budget.json`, unless `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable names another.
+The budget file is `~/.philter-diffuse/privacy_budget.json`, unless `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable names another. `python main.py --budget-status` prints what each source has spent and has left. Each release is logged next to the budget, in `privacy_budget.releases.jsonl` or MongoDB's `privacy_releases` collection.
 
 ### How can I reset the privacy budget?
 In a development or testing environment, reset the budget as follows. In production, see [Resetting the Budget](privacy-budget.md#resetting-the-budget) first.

@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - With `--philter-url`, the privacy budget is kept per UTC day. A release is charged to every day from `--from` to `--to`, and `--budget-ceiling` applies to each day, so releases over separate periods each have the full ceiling. Days that two releases share are charged by both. A refused release names the day and the epsilon it has spent. ([#1](https://github.com/philterd/philter-diffuse/issues/1))
 - `--philter-url` now requires `--from` and `--to`.
 - A budget file entry from `0.1.0` is read as already spent on every day, so upgrading gives no release more budget than it had before.
+- `--budget-status` prints the epsilon spent and remaining for each source in the budget file, or with `--mongo-uri` in MongoDB, against `--budget-ceiling`, and per UTC day for a Philter deployment. It reads no counts, makes no request to Philter, needs no `--pii-types` or `--output`, and changes nothing. ([#2](https://github.com/philterd/philter-diffuse/issues/2))
+- The audit report gives the budget spent and remaining after the release. With `--philter-url`, they are for the busiest day of the window, which the report names.
+- A release that leaves its source, or with `--philter-url` a day, past a share of `--budget-ceiling` prints a warning on standard error. The share is 0.8 unless `--budget-warning-share` sets another.
+- Each release adds one entry to a release log next to the budget: `privacy_budget.releases.jsonl` beside the budget file, or the `privacy_releases` collection in MongoDB. An entry gives the time, the source, the epsilon, the scale, the declared types, and the window when there is one, and never a count. It is written right after the charge, under the same lock, and a refused release adds none.
 
 ## 0.1.0 - 2026-11-04
 
