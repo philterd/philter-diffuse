@@ -20,11 +20,33 @@ Philter Diffuse automatically tracks the cumulative epsilon spent for each uniqu
 
 *   **MongoDB Mode**: The spent budget is stored in a collection named `privacy_metadata` within the same database as the data.
 *   **JSON Mode**: The spent budget is stored in the budget file, under the `--source` name. A renamed or copied input file keeps its budget, and a new `--source` name starts a new one, so use one name per dataset.
-*   **Philter API Mode** (`--philter-url`): The spent budget is stored in the budget file, under a key naming the Philter URL, such as `pii_count_aggregates@https://localhost:8080`. Nothing is written to Philter or its database. Every read from that deployment draws on the one budget, whatever `--context`, `--from`, or `--to` it uses, so overlapping reports cannot each spend a fresh budget. If Philter reports that count recording is off, no budget is spent. Moving from `--mongo-uri --aggregates` to `--philter-url` starts a new budget entry: the epsilon already spent is recorded in MongoDB's `privacy_metadata` collection (under the `pii_counts` collection name), not in the budget file. When you move, copy the spent epsilon to the new entry so earlier releases still count against the ceiling.
+*   **Philter API Mode** (`--philter-url`): The spent budget is stored in the budget file, under a key naming the Philter URL, such as `pii_count_aggregates@https://localhost:8080`. Nothing is written to Philter or its database. The budget is kept per UTC day, as described below, and every read from that deployment draws on it whatever `--context` it uses. If Philter reports that count recording is off, no budget is spent. Moving from `--mongo-uri --aggregates` to `--philter-url` starts a new budget entry: the epsilon already spent is recorded in MongoDB's `privacy_metadata` collection (under the `pii_counts` collection name), not in the budget file. When you move, copy the spent epsilon to the new entry so earlier releases still count against the ceiling.
 
 The budget file is `~/.philter-diffuse/privacy_budget.json`, so it does not depend on the working directory. To keep it elsewhere, such as on storage shared by several machines, set `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable, and use the same file for every run against a source. A budget file that cannot be read stops the run rather than starting again from zero, so back it up.
 
 The budget is charged before any noise is sampled, as one step with the ceiling check, so runs at the same time cannot each spend the same balance. On Windows, concurrent runs against one budget file are not serialized: run them one at a time.
+
+## Per-Day Budget with Philter's API
+
+Philter records the counts of each redaction under one UTC day, so a document is in the counts of only the releases whose window includes its day. Releases over separate days do not add up for any one document (parallel composition). The budget for a Philter deployment is therefore kept per day:
+
+*   A release gives `--from` and `--to`, which are required with `--philter-url`, and its epsilon is charged to every day from one to the other, both inclusive.
+*   `--budget-ceiling` applies to each day. A release is refused when any day in its window would pass it, and the error names that day and the epsilon it has spent.
+*   Releases over separate windows each have the full ceiling, so a report per month keeps working. Windows may overlap: the days they share are charged by both.
+*   What a day has been charged bounds the privacy loss of every document recorded on it.
+
+The budget file keeps the window and epsilon of each release under the deployment's entry, with an amount spent on every day:
+
+```json
+{
+  "pii_count_aggregates@https://localhost:8080": {
+    "spent_on_every_day": 0.0,
+    "releases": [{"from": "2026-09-01", "to": "2026-09-30", "epsilon": 1.5}]
+  }
+}
+```
+
+An entry written by version `0.1.0` holds one total. It is read as already spent on every day, so upgrading gives no release more budget than it had before.
 
 ## The Budget Ceiling
 
@@ -33,7 +55,7 @@ The `--budget-ceiling` parameter (default: `10.0`) defines the maximum allowed c
 ### What happens when the ceiling is reached?
 If a requested query would cause the total spent epsilon to exceed the ceiling, Philter Diffuse refuses it:
 
-1.  **Error**: The run exits with code `1`, and standard error gives the cost of the release and the amount already spent.
+1.  **Error**: The run exits with code `1`, and standard error gives the cost of the release and the amount already spent. With `--philter-url`, it names the day that would pass the ceiling.
 2.  **No Output**: No counts are released. Any existing `--output` file is left unchanged, and no report is printed.
 3.  **No Budget Consumption**: Nothing is deducted from the remaining budget.
 
@@ -51,9 +73,9 @@ To assist non-technical auditors, Philter Diffuse provides a qualitative interpr
 ## Managing the Budget
 
 ### Resetting the Budget
-The budget covers every document in a source, and it does not renew. Resetting it is sound only when later releases leave out every document an earlier release covered. A release of new data that still includes the old data adds to the privacy loss of the old documents, so resetting the budget before it removes the protection the ceiling provides.
+For JSON and MongoDB sources, the budget covers every document in a source, and it does not renew. Resetting it is sound only when later releases leave out every document an earlier release covered. A release of new data that still includes the old data adds to the privacy loss of the old documents, so resetting the budget before it removes the protection the ceiling provides.
 
-*   **Philter API**: Philter's counts accumulate, so a read without `--from` and `--to` includes every earlier day. After a reset, limit every release with `--from` to days after the last release. Philter Diffuse does not check this.
+*   **Philter API**: The budget is kept per day, so a release over new days needs no reset: those days have the full ceiling. Removing the entry clears every day at once, which is sound only if later releases leave out every day an earlier release covered. Philter Diffuse does not check this.
 *   **JSON**: A dataset with no documents in common with an earlier one needs no reset: give it a new `--source` name.
 
 The bound stays per document, so a person who appears in documents on both sides of a reset is exposed to both sets of releases.

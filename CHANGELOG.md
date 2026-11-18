@@ -4,6 +4,14 @@ All notable changes to Philter Diffuse are recorded here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Philter Diffuse follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). As a `0.x` project, its command-line interface and output format may change before `1.0.0`.
 
+## Unreleased
+
+### Privacy budget
+
+- With `--philter-url`, the privacy budget is kept per UTC day. A release is charged to every day from `--from` to `--to`, and `--budget-ceiling` applies to each day, so releases over separate periods each have the full ceiling. Days that two releases share are charged by both. A refused release names the day and the epsilon it has spent. ([#1](https://github.com/philterd/philter-diffuse/issues/1))
+- `--philter-url` now requires `--from` and `--to`.
+- A budget file entry from `0.1.0` is read as already spent on every day, so upgrading gives no release more budget than it had before.
+
 ## 0.1.0 - 2026-11-04
 
 Initial release.

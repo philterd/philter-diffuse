@@ -60,14 +60,14 @@ The JSON file must be a flat object where keys represent the PII type and values
 | `--scale` | The **scale** parameter for the Laplace noise. A higher scale adds more noise (more privacy, less accuracy). | `2.0` |
 | `--output` | **[Required]** The file path where the privatized CSV results will be saved. | `None` |
 | `--threshold` | Results with a privatized count below this value will be masked as `None` in the output. | `0` |
-| `--budget-ceiling` | The maximum cumulative privacy budget (epsilon) allowed for a single source. | `10.0` |
+| `--budget-ceiling` | The maximum cumulative privacy budget (epsilon) allowed for a single source, and with `--philter-url` for each UTC day. | `10.0` |
 | `--budget-file` | Where to keep the privacy budget, for sources other than MongoDB. | `PHILTER_DIFFUSE_BUDGET_FILE`, then `~/.philter-diffuse/privacy_budget.json` |
 | `--aggregates` | Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | off |
 | `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | `None` |
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | `None` |
-| `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. | `None` |
-| `--to` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | `None` |
+| `--from` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or later. The release is charged to the privacy budget of every day from `--from` to `--to`. | `None` |
+| `--to` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | `None` |
 | `--version` | Print the Philter Diffuse version and exit. | |
 
 Run `python main.py --help` to see this list from the tool itself. A flag that does not apply to the chosen source is refused with exit code `2` rather than ignored.
@@ -82,10 +82,10 @@ Philter 4.0 and later serve the counts at `GET /api/pii-counts`. Reading them th
 
 ```bash
 export PHILTER_API_KEY=<api key>
-python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
+python main.py --philter-url https://localhost:8080 --from 2026-09-01 --to 2026-09-30 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
 ```
 
-`--philter-url` implies `--aggregates`. Narrow the counts by context and by UTC day (both dates inclusive):
+`--philter-url` implies `--aggregates`, and it requires `--from` and `--to`: the UTC days the release covers, both inclusive. The release is charged to the privacy budget of each of those days. Narrow the counts by context as well:
 
 ```bash
 python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number \
@@ -117,12 +117,12 @@ Error: Philter refused the request (HTTP 403, missing_scope): This API key does 
 ```bash
 docker cp <philter-container>:/opt/philter/ssl/philter.p12 .
 openssl pkcs12 -in philter.p12 -clcerts -nokeys -passin pass:philter -out philter.pem
-python main.py --philter-url https://localhost:8080 --philter-ca-cert philter.pem --pii-types ssn,email-address,phone-number --output privatized_counts.csv
+python main.py --philter-url https://localhost:8080 --philter-ca-cert philter.pem --from 2026-09-01 --to 2026-09-30 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
 ```
 
 `--philter-ca-cert` adds to the system's certificate authorities, so it also takes a private CA's certificate. Where TLS is terminated in front of Philter and Philter serves plain HTTP, use an `http://` URL only over a private network: the API key travels in every request. Redirects are not followed, so the key is only ever sent to the URL you give.
 
-**Privacy budget.** The budget for API reads is tracked in the budget file, keyed by the Philter URL, not in Philter's database. Moving from the MongoDB path starts a new budget entry, so carry the epsilon already spent over to it; see [Privacy Budget Management](privacy-budget.md).
+**Privacy budget.** The budget for API reads is tracked in the budget file, keyed by the Philter URL, not in Philter's database. It is kept per UTC day: a release is charged to every day from `--from` to `--to`, and `--budget-ceiling` applies to each day, so a report per period has the full ceiling each time. Moving from the MongoDB path starts a new budget entry, so carry the epsilon already spent over to it; see [Privacy Budget Management](privacy-budget.md).
 
 #### From MongoDB (deprecated)
 

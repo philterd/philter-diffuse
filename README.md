@@ -28,7 +28,7 @@ Every run names the PII types to release with `--pii-types`. Choose the list bef
    With Philter 4.0 or later, recording PII counts:
    ```bash
    export PHILTER_API_KEY=<api key>
-   python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
+   python main.py --philter-url https://localhost:8080 --from 2026-09-01 --to 2026-09-30 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
    ```
    See [Reading Philter's PII counts](#reading-philters-pii-counts).
 
@@ -68,6 +68,8 @@ Every run names the PII types to release with `--pii-types`. Choose the list bef
 
 Philter Diffuse tracks the total epsilon spent per source in a persistent store. When using MongoDB, it is stored in the `privacy_metadata` collection. Otherwise (JSON input, or reading counts through Philter's API), it is stored in `~/.philter-diffuse/privacy_budget.json`, or the file named by `--budget-file` or the `PHILTER_DIFFUSE_BUDGET_FILE` environment variable. JSON input is tracked under its `--source` name, so a renamed or copied file keeps its budget.
 
+With `--philter-url`, the budget is kept per UTC day: a release is charged to every day from `--from` to `--to`, and `--budget-ceiling` applies to each day, so reports over separate periods each have the full ceiling. See [Privacy Budget Management](https://philterd.github.io/philter-diffuse/privacy-budget/).
+
 If a release would pass the `--budget-ceiling`, the tool exits with an error (exit code `1`), writes no output, leaves any existing `--output` file unchanged, and spends no budget.
 
 ## CLI Options
@@ -81,14 +83,14 @@ If a release would pass the `--budget-ceiling`, the tool exits with an error (ex
 | `--scale` | Scale for Laplace noise (higher = more privacy). | Optional | `2.0` |
 | `--output` | Path to write the privatized PII counts to a CSV file. | **Required** | None |
 | `--threshold` | Counts below this threshold will be output as `None`. | Optional | `0` |
-| `--budget-ceiling` | The maximum total epsilon allowed per source. | Optional | `10.0` |
+| `--budget-ceiling` | The maximum total epsilon allowed per source, and with `--philter-url` per UTC day. | Optional | `10.0` |
 | `--budget-file` | Where to keep the privacy budget, for sources other than MongoDB. | Optional | `PHILTER_DIFFUSE_BUDGET_FILE`, then `~/.philter-diffuse/privacy_budget.json` |
 | `--aggregates` | Read [Philter's](https://www.github.com/philterd/philter) aggregated, document-presence PII counts (summing the count buckets that Philter records per user's `(context, day)`) instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | Optional | off |
 | `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | Optional | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | Optional | None |
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | Optional | None |
-| `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. | Optional | None |
-| `--to` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | Optional | None |
+| `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. The release is charged to the privacy budget of every day from `--from` to `--to`. | With `--philter-url` | None |
+| `--to` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | With `--philter-url` | None |
 
 ### Reading Philter's PII counts
 
@@ -100,15 +102,15 @@ Philter 4.0 serves the counts at `GET /api/pii-counts`, so Philter Diffuse needs
 
 ```bash
 export PHILTER_API_KEY=<api key>
-python main.py --philter-url https://localhost:8080 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
+python main.py --philter-url https://localhost:8080 --from 2026-09-01 --to 2026-09-30 --pii-types ssn,email-address,phone-number --output privatized_counts.csv
 ```
 
 * The key must hold the `pii-counts:read` scope, and its user must be a Philter **administrator**, because the counts cover the whole deployment. Philter records each read in its audit log.
-* Narrow the counts with `--context <name>` and with `--from` and `--to` (UTC days, `YYYY-MM-DD`, both inclusive). Philter applies these filters, and Philter Diffuse reads every page of the result. Philter keeps each user's counts apart; without `--context`, Philter Diffuse sums every user's. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's.
+* Give the days the release covers with `--from` and `--to` (UTC days, `YYYY-MM-DD`, both inclusive), which are required, and narrow the counts with `--context <name>`. Philter applies these filters, and Philter Diffuse reads every page of the result. Philter keeps each user's counts apart; without `--context`, Philter Diffuse sums every user's. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's.
 * If Philter reports that count recording is turned off, Philter Diffuse says so and exits without writing privatized output or spending privacy budget, rather than privatizing an empty or partial result as if no PII had been found.
 * If Philter refuses the request (missing scope, not an administrator, invalid key) or cannot be reached, Philter Diffuse prints the reason and Philter's request ID when one is returned, so the request can be found in Philter's audit log.
 * Certificates are verified. Philter's Docker image generates a self-signed certificate; to trust it, export it and pass it with `--philter-ca-cert philter.pem` rather than turning verification off. Redirects are not followed, so the API key is only ever sent to the URL you give.
-* The privacy budget for API reads is tracked in the budget file, not in Philter's database, keyed by the Philter URL (`pii_count_aggregates@https://localhost:8080`). No MongoDB connection is made. Moving from the MongoDB path starts a new budget entry: copy the epsilon already spent (in MongoDB's `privacy_metadata` collection) into the budget file so earlier releases still count against the ceiling.
+* The privacy budget for API reads is tracked per UTC day in the budget file, not in Philter's database, keyed by the Philter URL (`pii_count_aggregates@https://localhost:8080`). No MongoDB connection is made. Moving from the MongoDB path starts a new budget entry: copy the epsilon already spent (in MongoDB's `privacy_metadata` collection) into the budget file so earlier releases still count against the ceiling.
 
 #### From MongoDB (deprecated)
 

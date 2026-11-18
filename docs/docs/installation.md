@@ -84,6 +84,7 @@ docker run --rm --network philter-net --user "$(id -u):$(id -g)" -v $(pwd)/data:
            -e PHILTER_API_KEY \
            philterd/philter-diffuse:0.1.0 \
            --philter-url https://philter:8080 \
+           --from 2026-09-01 --to 2026-09-30 \
            --philter-ca-cert philter.pem \
            --pii-types ssn,email-address,phone-number \
            --output privatized_counts.csv
