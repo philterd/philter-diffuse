@@ -25,9 +25,9 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 import opendp.prelude as dp
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 
 try:
     import fcntl
@@ -53,6 +53,15 @@ DEFAULT_BUDGET_FILE = os.path.join("~", ".philter-diffuse", "privacy_budget.json
 
 # The largest count OpenDP's 64-bit integers hold.
 MAX_COUNT = 2**63 - 1
+
+# A release that leaves a source, or a day, past this share of the budget ceiling prints a warning.
+DEFAULT_WARNING_SHARE = 0.8
+
+# The MongoDB collection that holds the release log, next to the privacy_metadata collection.
+RELEASE_LOG_COLLECTION = "privacy_releases"
+
+# The last day a YYYY-MM-DD date can name.
+LAST_DAY = date.max.isoformat()
 
 
 class PhilterApiError(Exception):
@@ -256,6 +265,51 @@ def _busiest_day(ledger, first_day, last_day):
     return max(((day, spent_on(day)) for day in days), key=lambda day_spent: day_spent[1])
 
 
+def _spent_by_day(ledger):
+    """
+    Returns (first_day, last_day, spent) for each run of days that has spent more than the amount
+    spent on every day, in order. What a day has spent changes only on the first day of a release's window and on the day
+    after its last, so the days between two of those have all spent the same.
+    """
+    def shift(day, days):
+        return (date.fromisoformat(day) + timedelta(days=days)).isoformat()
+
+    starts = sorted({release["from"] for release in ledger["releases"]}
+                    | {shift(release["to"], 1) for release in ledger["releases"] if release["to"] < LAST_DAY})
+    runs = []
+    for i, start in enumerate(starts):
+        end = shift(starts[i + 1], -1) if i + 1 < len(starts) else LAST_DAY
+        spent = _busiest_day(ledger, start, start)[1]
+        if runs and math.isclose(runs[-1][2], spent, abs_tol=1e-12):
+            runs[-1] = (runs[-1][0], end, runs[-1][2])
+        else:
+            runs.append((start, end, spent))
+    return [run for run in runs if not math.isclose(run[2], ledger["spent_on_every_day"], abs_tol=1e-12)]
+
+
+def _replace_file(path, content, mode_from=None):
+    """
+    Replaces the file in one step, so a crash cannot leave it truncated. A file that already exists
+    keeps its access; a new one takes the access of mode_from when that is given.
+    """
+    descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)))
+    try:
+        # mkstemp makes the file private; keep whatever access the file already had.
+        if os.path.exists(path):
+            shutil.copymode(path, temporary)
+        elif mode_from and os.path.exists(mode_from):
+            shutil.copymode(mode_from, temporary)
+        with os.fdopen(descriptor, 'w') as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(temporary)
+        raise
+
+
 class PhilterDiffuse:
     """
     Differential Privacy Engine for MongoDB.
@@ -279,11 +333,18 @@ class PhilterDiffuse:
             self.collection_name = collection_name or "pii_counts"
             self.collection = self.db[self.collection_name]
             self.metadata_collection = self.db["privacy_metadata"]
+            self.release_log_collection = self.db[RELEASE_LOG_COLLECTION]
         else:
             self.client = None
             self.collection_name = collection_name or "json_file" # Default label for JSON mode
             self.budget_file = os.path.expanduser(budget_file or os.environ.get(BUDGET_FILE_ENV) or DEFAULT_BUDGET_FILE)
+            # The release log sits next to the budget file: privacy_budget.json logs to
+            # privacy_budget.releases.jsonl.
+            self.release_log = f"{os.path.splitext(self.budget_file)[0]}.releases.jsonl"
         self.sensitivity = 1  # How much one document can change any one count
+        # (spent, day) after the last release: the epsilon the source has spent, or with a window the
+        # epsilon spent on the window's busiest day, which is then named.
+        self.spent_after_release = None
 
     def _get_spent_epsilon(self):
         """
@@ -293,6 +354,40 @@ class PhilterDiffuse:
             record = self.metadata_collection.find_one({"collection": self.collection_name})
             return record.get("spent_epsilon", 0.0) if record else 0.0
         return self._read_budget_file().get(self.collection_name, 0.0)
+
+    def budget_status(self, budget_ceiling):
+        """
+        Returns the lines --budget-status prints: the spent and remaining epsilon of every source in
+        the budget store, per UTC day for a source kept by day. It only reads: nothing is created,
+        locked, or changed, and no counts are read.
+        """
+        def amounts(spent):
+            return f"spent {spent:g}, remaining {max(0.0, budget_ceiling - spent):g}"
+
+        if self.client:
+            # The database name only: the URI can hold a password.
+            where = f"the privacy_metadata collection of MongoDB database {self.db.name}"
+            entries = {record["collection"]: record.get("spent_epsilon", 0.0)
+                       for record in self.metadata_collection.find()}
+        else:
+            where = self.budget_file
+            entries = self._read_budget_file()
+        if not entries:
+            return [f"No privacy budget has been spent in {where}."]
+
+        lines = [f"Privacy budget in {where}, against a ceiling of {budget_ceiling:g}:"]
+        for source in sorted(entries):
+            entry = entries[source]
+            if not isinstance(entry, dict):
+                lines.append(f"{source}: {amounts(entry)}")
+                continue
+            ledger = _daily_ledger(entry)
+            lines.append(f"{source}, per UTC day:")
+            for first_day, last_day, spent in _spent_by_day(ledger):
+                days = first_day if first_day == last_day else f"{first_day} to {last_day}"
+                lines.append(f"  {days}: {amounts(spent)}")
+            lines.append(f"  every other day: {amounts(ledger['spent_on_every_day'])}")
+        return lines
 
     def _read_budget_file(self):
         if not os.path.exists(self.budget_file):
@@ -308,20 +403,21 @@ class PhilterDiffuse:
         """
         Replaces the file in one step, so a crash cannot leave a truncated budget behind.
         """
-        descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(self.budget_file)))
-        try:
-            if os.path.exists(self.budget_file):
-                # mkstemp makes the file private; keep whatever access the budget already had.
-                shutil.copymode(self.budget_file, temporary)
-            with os.fdopen(descriptor, 'w') as f:
-                json.dump(budget_data, f)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temporary, self.budget_file)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.remove(temporary)
-            raise
+        _replace_file(self.budget_file, json.dumps(budget_data))
+
+    def _log_release(self, release):
+        """
+        Adds one entry to the release log. It is called under the budget lock, right after the charge
+        is written, so concurrent runs cannot drop each other's entries. The log is replaced in one step
+        like the budget, so a crash leaves it as it was, and a new log takes the budget file's access.
+        """
+        log = ""
+        if os.path.exists(self.release_log):
+            with open(self.release_log, 'r') as f:
+                log = f.read()
+            if log and not log.endswith("\n"):
+                log += "\n"
+        _replace_file(self.release_log, log + json.dumps(release) + "\n", mode_from=self.budget_file)
 
     @contextlib.contextmanager
     def _budget_lock(self):
@@ -331,26 +427,32 @@ class PhilterDiffuse:
                 fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
-    def _charge(self, epsilon, budget_ceiling, window=None):
+    def _charge(self, epsilon, budget_ceiling, window=None, release=None):
         """
         Adds epsilon to the amount spent, as one step with the ceiling check so that concurrent runs
         cannot each pass the check on the same balance. Raises BudgetExceeded without charging when
-        the ceiling would be passed.
+        the ceiling would be passed. Returns (spent, day): what the source has spent after the charge,
+        or with a window what the window's busiest day has spent, and that day.
 
         With a window, a (from, to) pair of UTC days, the budget file keeps the amount spent per day:
         the release is charged to every day in the window, and the ceiling applies to each day. A
         document is recorded under one day, so only the releases whose windows include that day add
         to its privacy loss.
+
+        With release, the log entry for this release, the entry is added to the release log right
+        after the charge is written. A refused release adds nothing.
         """
         if self.client:
             self.metadata_collection.create_index("collection", unique=True)
             self.metadata_collection.update_one({"collection": self.collection_name},
                                                 {"$setOnInsert": {"spent_epsilon": 0.0}}, upsert=True)
-            charged = self.metadata_collection.update_one(
+            charged = self.metadata_collection.find_one_and_update(
                 {"collection": self.collection_name, "spent_epsilon": {"$lte": budget_ceiling - epsilon}},
-                {"$inc": {"spent_epsilon": epsilon}})
-            if charged.modified_count == 1:
-                return
+                {"$inc": {"spent_epsilon": epsilon}}, return_document=ReturnDocument.AFTER)
+            if charged is not None:
+                if release is not None:
+                    self.release_log_collection.insert_one(dict(release))
+                return charged["spent_epsilon"], None
             spent = self._get_spent_epsilon()
         else:
             with self._budget_lock():
@@ -362,7 +464,10 @@ class PhilterDiffuse:
                         ledger["releases"].append({"from": window[0], "to": window[1], "epsilon": epsilon})
                         budget_data[self.collection_name] = ledger
                         self._write_budget_file(budget_data)
-                        return
+                        if release is not None:
+                            self._log_release(release)
+                        # Every day in the window was charged the same, so the busiest day stays so.
+                        return spent + epsilon, day
                     raise BudgetExceeded(f"This release costs epsilon {epsilon:g}, and {day} has spent {spent:g} "
                                          f"of its budget ceiling of {budget_ceiling:g} at {self.collection_name}. "
                                          f"Nothing was released and no budget was spent. Raise --scale or list "
@@ -371,7 +476,9 @@ class PhilterDiffuse:
                 if spent + epsilon <= budget_ceiling:
                     budget_data[self.collection_name] = spent + epsilon
                     self._write_budget_file(budget_data)
-                    return
+                    if release is not None:
+                        self._log_release(release)
+                    return spent + epsilon, None
         raise BudgetExceeded(f"This release costs epsilon {epsilon:g}, and {self.collection_name} has spent "
                              f"{spent:g} of its budget ceiling of {budget_ceiling:g}. Nothing was released and "
                              f"no budget was spent. Raise --scale or list fewer types to spend less.")
@@ -473,17 +580,26 @@ class PhilterDiffuse:
         )
         epsilon = measurement.map(d_in=self.sensitivity * len(keys))
 
+        # The log entry names what was released and what it cost, never a count, raw or private.
+        release = {"time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   "source": self.collection_name, "epsilon": epsilon, "scale": float(scale), "pii_types": keys}
+        if window:
+            release["from"], release["to"] = window
+
         # Charge before sampling: a failure after this overcharges, while the reverse could release
         # counts that were never paid for.
-        self._charge(epsilon, budget_ceiling, window)
+        self.spent_after_release = self._charge(epsilon, budget_ceiling, window, release)
 
         noisy = measurement([int(raw_counts[k]) for k in keys])
         return {k: max(0, v) for k, v in zip(keys, noisy)}, epsilon
 
-    def generate_audit_report(self, private, epsilon, csv_file=None, threshold=0):
+    def generate_audit_report(self, private, epsilon, csv_file=None, threshold=0, spent=None,
+                              budget_ceiling=None, day=None):
         """
         Prints the audit report for a release. It holds no raw counts: standard output ends up in
-        logs, and exact counts there would undo the noise added to the release.
+        logs, and exact counts there would undo the noise added to the release. With spent and
+        budget_ceiling, it gives the budget spent and remaining after the release, on the given day
+        for a budget kept per day.
         """
         print("\n" + "="*40)
         print("PRIVACY AUDIT REPORT")
@@ -491,6 +607,11 @@ class PhilterDiffuse:
         print(f"Privacy Loss (Epsilon): {epsilon:.4f}")
         print(f"Protection Strength:   {self._interpret_epsilon(epsilon)}")
         print(f"Influence Limit:      e^{epsilon:.2f} ({math.exp(epsilon):.2f}x)")
+        if spent is not None and budget_ceiling is not None:
+            on_day = f" on {day}" if day else ""
+            print(f"Budget Spent:         {spent:.4f} of {budget_ceiling:.4f}{on_day}"
+                  + (" (the busiest day from --from to --to)" if day else ""))
+            print(f"Budget Remaining:     {max(0.0, budget_ceiling - spent):.4f}{on_day}")
         if csv_file:
             print(f"Output File:          {csv_file}")
         if threshold > 0:
@@ -563,6 +684,16 @@ def _ceiling(value):
     return number
 
 
+def _share(value):
+    """
+    An argparse type for a share from 0 to 1.
+    """
+    number = float(value)
+    if not 0 <= number <= 1:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a share from 0 to 1, such as 0.8.")
+    return number
+
+
 def _threshold(value):
     """
     An argparse type for a whole number of 0 or more.
@@ -593,12 +724,14 @@ def main(argv=None):
     parser.add_argument("--input", type=str, help="Path to a JSON document containing PII entity counts.")
     parser.add_argument("--source", type=str, default=None, metavar="NAME", help="With --input, a name for the dataset the counts come from. The privacy budget is tracked under this name, so keep it the same for every release from that dataset.")
     parser.add_argument("--mongo-uri", type=str, default=None, help="MongoDB connection URI (format: mongodb://host:port/database).")
-    parser.add_argument("--pii-types", type=_pii_types, required=True, metavar="TYPE[,TYPE...]", help="The PII types to release, comma-separated, such as ssn,email-address. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs 1/scale of epsilon. Choose the list without looking at the counts.")
-    parser.add_argument("--scale", type=_scale, default=2.0, help="Scale for Laplace noise (higher = more privacy, less accuracy).")
-    parser.add_argument("--output", type=str, required=True, help="Path to write the privatized PII counts to a CSV file.")
-    parser.add_argument("--threshold", type=_threshold, default=0, help="Counts below this threshold will be output as 'None'.")
+    parser.add_argument("--pii-types", type=_pii_types, default=None, metavar="TYPE[,TYPE...]", help="Required for a release. The PII types to release, comma-separated, such as ssn,email-address. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs 1/scale of epsilon. Choose the list without looking at the counts.")
+    parser.add_argument("--scale", type=_scale, default=None, help="Scale for Laplace noise (higher = more privacy, less accuracy). Defaults to 2.0.")
+    parser.add_argument("--output", type=str, default=None, help="Required for a release. Path to write the privatized PII counts to a CSV file.")
+    parser.add_argument("--threshold", type=_threshold, default=None, help="Counts below this threshold will be output as 'None'.")
     parser.add_argument("--budget-ceiling", type=_ceiling, default=10.0, help="The maximum total epsilon allowed per source, and with --philter-url per UTC day.")
+    parser.add_argument("--budget-warning-share", type=_share, default=None, metavar="SHARE", help=f"Print a warning on standard error when a release leaves a source, or with --philter-url a day, past this share of --budget-ceiling, from 0 to 1. Defaults to {DEFAULT_WARNING_SHARE}.")
     parser.add_argument("--budget-file", type=str, default=None, metavar="PATH", help=f"Where to keep the privacy budget, for sources other than MongoDB. Defaults to the {BUDGET_FILE_ENV} environment variable, then {DEFAULT_BUDGET_FILE}.")
+    parser.add_argument("--budget-status", action="store_true", help="Print the epsilon spent and remaining for each source in the budget file, or with --mongo-uri in MongoDB, against --budget-ceiling, and exit. It reads no counts, makes no request to Philter, and spends nothing.")
     parser.add_argument("--aggregates", action="store_true", help="Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With --philter-url they are read through Philter's API; otherwise from the pii_count_aggregates collection (deprecated).")
     parser.add_argument("--context", type=str, default=None, help="When reading aggregates, restrict to a single Philter context.")
     parser.add_argument("--philter-url", type=str, default=None, metavar="URL", help=f"Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as https://localhost:8080, instead of from MongoDB. Implies --aggregates. The API key is read from the {PHILTER_API_KEY_ENV} environment variable.")
@@ -607,6 +740,35 @@ def main(argv=None):
     parser.add_argument("--to", dest="date_to", type=_day, default=None, metavar="YYYY-MM-DD", help="Required with --philter-url. Read only counts for this UTC day or earlier.")
 
     args = parser.parse_args(argv)
+
+    if args.budget_status:
+        for flag, value in (("--input", args.input), ("--source", args.source), ("--philter-url", args.philter_url),
+                            ("--philter-ca-cert", args.philter_ca_cert), ("--pii-types", args.pii_types),
+                            ("--output", args.output), ("--scale", args.scale), ("--threshold", args.threshold),
+                            ("--budget-warning-share", args.budget_warning_share), ("--aggregates", args.aggregates),
+                            ("--context", args.context), ("--from", args.date_from), ("--to", args.date_to)):
+            if value is not None and value is not False:
+                parser.error(f"--budget-status only reads the budget and cannot be used with {flag}.")
+        if args.budget_file and args.mongo_uri:
+            parser.error("--budget-file cannot be used with --mongo-uri, which keeps the budget in MongoDB.")
+        try:
+            engine = PhilterDiffuse(args.mongo_uri, budget_file=args.budget_file)
+            for line in engine.budget_status(args.budget_ceiling):
+                print(line)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    missing = [flag for flag, value in (("--pii-types", args.pii_types), ("--output", args.output)) if value is None]
+    if missing:
+        parser.error(f"the following arguments are required: {', '.join(missing)}")
+    if args.scale is None:
+        args.scale = 2.0
+    if args.threshold is None:
+        args.threshold = 0
+    if args.budget_warning_share is None:
+        args.budget_warning_share = DEFAULT_WARNING_SHARE
 
     if sum(1 for source in (args.input, args.philter_url, args.mongo_uri) if source) > 1:
         parser.error("--input, --philter-url, and --mongo-uri cannot be used together.")
@@ -684,12 +846,18 @@ def main(argv=None):
         window = (args.date_from, args.date_to) if args.philter_url else None
         private_data, spent_epsilon = engine.privatize_counts(raw_data, scale=args.scale,
                                                               budget_ceiling=args.budget_ceiling, window=window)
+        spent, day = engine.spent_after_release
 
         # 3. Output to CSV
         engine.write_counts_to_csv(private_data, args.output, threshold=args.threshold)
         
         # 4. Report
-        engine.generate_audit_report(private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold)
+        engine.generate_audit_report(private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold,
+                                     spent=spent, budget_ceiling=args.budget_ceiling, day=day)
+        if spent > args.budget_warning_share * args.budget_ceiling:
+            spender = f"{day} has spent {spent:g} of its budget ceiling of {args.budget_ceiling:g} at {engine.collection_name}" \
+                if day else f"{engine.collection_name} has spent {spent:g} of its budget ceiling of {args.budget_ceiling:g}"
+            print(f"WARNING: {spender}, past the warning share of {args.budget_warning_share * 100:g}%.", file=sys.stderr)
 
     except SystemExit:
         # Propagate the exit status so a failed run does not look like a successful one.

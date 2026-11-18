@@ -72,6 +72,10 @@ With `--philter-url`, the budget is kept per UTC day: a release is charged to ev
 
 If a release would pass the `--budget-ceiling`, the tool exits with an error (exit code `1`), writes no output, leaves any existing `--output` file unchanged, and spends no budget.
 
+To see what each source has spent and has left, run `python main.py --budget-status` (add `--mongo-uri` for MongoDB). It reads no counts, makes no request to Philter, and spends nothing. The audit report of each release also gives the budget spent and remaining, and a release that leaves its source past 80% of the ceiling prints a warning on standard error (`--budget-warning-share` sets another share).
+
+Each release adds an entry to a release log next to the budget, `privacy_budget.releases.jsonl` beside the budget file or the `privacy_releases` collection in MongoDB: the time, the source, the epsilon, the scale, the declared types, and the window when there is one. It never holds a count. See [Privacy Budget Management](https://philterd.github.io/philter-diffuse/privacy-budget/#release-log).
+
 ## CLI Options
 
 | Option | Description | Required? | Default |
@@ -79,12 +83,14 @@ If a release would pass the `--budget-ceiling`, the tool exits with an error (ex
 | `--input` | Path to a JSON document containing PII entity counts. One of `--input`, `--philter-url`, or `--mongo-uri` is required. | Optional | None |
 | `--source` | With `--input`, a name for the dataset the counts come from. The privacy budget is tracked under this name, so keep it the same for every release from that dataset. | With `--input` | None |
 | `--mongo-uri` | MongoDB connection URI (format: `mongodb://host:port/database`). | Optional | None |
-| `--pii-types` | The PII types to release, comma-separated, such as `ssn,email-address`. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs `1 / scale` of epsilon. See [Choosing the PII types](https://philterd.github.io/philter-diffuse/usage/#choosing-the-pii-types). | **Required** | None |
+| `--pii-types` | The PII types to release, comma-separated, such as `ssn,email-address`. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs `1 / scale` of epsilon. See [Choosing the PII types](https://philterd.github.io/philter-diffuse/usage/#choosing-the-pii-types). | **Required** for a release | None |
 | `--scale` | Scale for Laplace noise (higher = more privacy). | Optional | `2.0` |
-| `--output` | Path to write the privatized PII counts to a CSV file. | **Required** | None |
+| `--output` | Path to write the privatized PII counts to a CSV file. | **Required** for a release | None |
 | `--threshold` | Counts below this threshold will be output as `None`. | Optional | `0` |
 | `--budget-ceiling` | The maximum total epsilon allowed per source, and with `--philter-url` per UTC day. | Optional | `10.0` |
 | `--budget-file` | Where to keep the privacy budget, for sources other than MongoDB. | Optional | `PHILTER_DIFFUSE_BUDGET_FILE`, then `~/.philter-diffuse/privacy_budget.json` |
+| `--budget-warning-share` | Print a warning on standard error when a release leaves its source, or with `--philter-url` a day, past this share of `--budget-ceiling`, from 0 to 1. | Optional | `0.8` |
+| `--budget-status` | Print the epsilon spent and remaining for each source in the budget file, or with `--mongo-uri` in MongoDB, against `--budget-ceiling`, and exit. Needs no `--pii-types` or `--output`, reads no counts, and spends nothing. | Optional | off |
 | `--aggregates` | Read [Philter's](https://www.github.com/philterd/philter) aggregated, document-presence PII counts (summing the count buckets that Philter records per user's `(context, day)`) instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | Optional | off |
 | `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | Optional | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | Optional | None |
