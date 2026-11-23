@@ -73,7 +73,7 @@ docker run --rm --user "$(id -u):$(id -g)" -v $(pwd)/data:/data \
 
 The image runs as an unprivileged user (UID 1000), not root. `--user "$(id -u):$(id -g)"` runs it as you, so it can write to a directory you own. A Docker named volume needs no `--user`.
 
-Always mount `/data`. The spent privacy budget is kept in `/data/privacy_budget.json`, so without the mount it is lost when the container exits and the next run starts with a fresh budget, which defeats `--budget-ceiling`.
+Always mount `/data`. The spent privacy budget is kept in `/data/privacy_budget.json`, so without the mount it is lost when the container exits and the next run starts with a fresh budget, which defeats `--budget-ceiling`. The release log, `/data/privacy_budget.releases.jsonl`, is kept there too.
 
 **Example: Reading counts from a Philter container**
 To read counts from a [Philter](https://github.com/philterd/philter) container through its API (Philter 4.0 or later), attach both containers to one Docker network and address Philter by its alias `philter`, which is in the subject alternative name of the self-signed certificate Philter's image generates. Export that certificate into `data/` first (see [Usage](usage.md#through-philters-api-recommended)).

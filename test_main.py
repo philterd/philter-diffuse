@@ -18,6 +18,7 @@ import hashlib
 import http.server
 import io
 import json
+import math
 import os
 import csv
 import shutil
@@ -1196,6 +1197,429 @@ class TestInputValidation(TempDirTestCase):
                 code, _, err = self.run_json({"ssn": 1}, f"{flag}={value}")
                 self.assertEqual(code, 2)
                 self.assertIn(flag, err)
+
+
+class TestBudgetStatus(TempDirTestCase):
+    """--budget-status prints what each source has spent and has left, and changes nothing."""
+
+    def test_prints_spent_and_remaining_for_each_source_and_day(self):
+        self.write_counts({
+            "claims": 2.0,
+            "notes": 4.5,
+            "pii_count_aggregates@https://philter:8080": {"spent_on_every_day": 0.0, "releases": [
+                {"from": "2026-09-01", "to": "2026-09-30", "epsilon": 1.0},
+                {"from": "2026-09-15", "to": "2026-10-15", "epsilon": 1.0}]},
+            "pii_count_aggregates@https://upgraded:8080": {"spent_on_every_day": 3.0, "releases": [
+                {"from": "2026-08-01", "to": "2026-08-15", "epsilon": 0.5},
+                {"from": "2026-08-16", "to": "2026-08-31", "epsilon": 0.5},
+                {"from": "2026-09-20", "to": "2026-09-20", "epsilon": 1.5}]},
+        }, "privacy_budget.json")
+        code, out, err = self.run_main("--budget-status", "--budget-ceiling", "5")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines(), [
+            "Privacy budget in privacy_budget.json, against a ceiling of 5:",
+            "claims: spent 2, remaining 3",
+            "notes: spent 4.5, remaining 0.5",
+            "pii_count_aggregates@https://philter:8080, per UTC day:",
+            "  2026-09-01 to 2026-09-14: spent 1, remaining 4",
+            "  2026-09-15 to 2026-09-30: spent 2, remaining 3",
+            "  2026-10-01 to 2026-10-15: spent 1, remaining 4",
+            "  every other day: spent 0, remaining 5",
+            "pii_count_aggregates@https://upgraded:8080, per UTC day:",
+            "  2026-08-01 to 2026-08-31: spent 3.5, remaining 1.5",
+            "  2026-09-20: spent 4.5, remaining 0.5",
+            "  every other day: spent 3, remaining 2",
+        ])
+
+    def test_remaining_is_never_below_zero(self):
+        self.write_counts({"claims": 12.0, "pii_count_aggregates@https://philter:8080": 11.0}, "privacy_budget.json")
+        code, out, err = self.run_main("--budget-status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("claims: spent 12, remaining 0", out)
+        # A 0.1.0 entry is one total, as for any other source.
+        self.assertIn("pii_count_aggregates@https://philter:8080: spent 11, remaining 0", out)
+
+    def test_matches_what_the_releases_spent(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            for first_day, last_day in (("2026-09-01", "2026-09-30"), ("2026-09-15", "2026-10-15")):
+                code, _, err = TestPhilterApi.run_cli(self, "--philter-url", philter.url, "--from", first_day,
+                                                      "--to", last_day, "--output", "out.csv")
+                self.assertEqual(code, 0, err)
+            requests = len(philter.requests)
+            code, out, err = self.run_main("--budget-status")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(philter.requests), requests)
+        self.assertIn("  2026-09-15 to 2026-09-30: spent 2, remaining 8", out)
+
+    def test_needs_no_types_or_output_and_reads_and_changes_nothing(self):
+        self.write_counts({"claims": 2.0}, "privacy_budget.json")
+        before = os.stat("privacy_budget.json")
+        with patch('main.PhilterClient', side_effect=AssertionError("Philter must not be called")), \
+                patch('main.PhilterDiffuse._charge', side_effect=AssertionError("nothing may be charged")), \
+                patch('main.PhilterDiffuse.load_counts_from_json', side_effect=AssertionError("no counts may be read")):
+            code, out, err = self.run_main("--budget-status")
+        self.assertEqual(code, 0, err)
+        self.assertIn("claims: spent 2, remaining 8", out)
+        self.assertEqual(sorted(os.listdir(".")), ["privacy_budget.json"])
+        after = os.stat("privacy_budget.json")
+        self.assertEqual((after.st_mtime_ns, after.st_size), (before.st_mtime_ns, before.st_size))
+
+    def test_an_empty_budget_is_reported_without_creating_a_file(self):
+        os.mkdir("store")
+        code, out, err = self.run_main("--budget-status", "--budget-file", "store/budget.json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.strip(), "No privacy budget has been spent in store/budget.json.")
+        self.assertEqual(os.listdir("store"), [])
+
+    def test_flags_for_a_release_are_refused(self):
+        for argv in (["--pii-types", "ssn"], ["--output", "out.csv"], ["--input", "c.json"], ["--source", "claims"],
+                     ["--philter-url", "https://x"], ["--scale", "2"], ["--threshold", "0"], ["--aggregates"],
+                     ["--context", "c"], ["--from", "2026-09-01"], ["--budget-warning-share", "0.5"]):
+            with self.subTest(argv=argv):
+                code, _, err = self.run_main("--budget-status", *argv)
+                self.assertEqual(code, 2)
+                self.assertIn(f"--budget-status only reads the budget and cannot be used with {argv[0]}", err)
+        code, _, err = self.run_main("--budget-status", "--mongo-uri", "mongodb://localhost/db", "--budget-file", "b.json")
+        self.assertEqual(code, 2)
+        self.assertIn("--budget-file cannot be used", err)
+
+    def test_a_release_still_needs_types_and_output(self):
+        self.write_counts({"ssn": 5})
+        code, _, err = self.run_main("--input", "counts.json", "--source", "claims")
+        self.assertEqual(code, 2)
+        self.assertIn("the following arguments are required: --pii-types, --output", err)
+
+    def test_reads_mongodb_without_printing_the_uri_or_writing(self):
+        client = mongomock.MongoClient()
+        client["status_db"]["privacy_metadata"].insert_many([
+            {"collection": "pii_counts", "spent_epsilon": 3.0}, {"collection": "pii_count_aggregates", "spent_epsilon": 9.5}])
+        with patch('main.MongoClient', return_value=client):
+            code, out, err = self.run_main("--budget-status", "--mongo-uri", "mongodb://reader:s3cret@localhost:27017/status_db")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines(), [
+            "Privacy budget in the privacy_metadata collection of MongoDB database status_db, against a ceiling of 10:",
+            "pii_count_aggregates: spent 9.5, remaining 0.5",
+            "pii_counts: spent 3, remaining 7",
+        ])
+        self.assertNotIn("s3cret", out + err)
+        self.assertEqual(client["status_db"]["privacy_metadata"].count_documents({}), 2)
+        self.assertNotIn(main.RELEASE_LOG_COLLECTION, client["status_db"].list_collection_names())
+
+
+class TestBudgetInReport(TempDirTestCase):
+    """The audit report gives what is spent and left after the release, and warns past a share of it."""
+
+    def release(self, *argv, types="ssn"):
+        self.write_counts({"ssn": 500, "age": 700})
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", types,
+                             "--scale", "1", "--output", "out.csv", *argv)
+
+    def test_report_shows_spent_and_remaining_after_the_release(self):
+        for spent, remaining in (("1.0000", "2.0000"), ("2.0000", "1.0000")):
+            code, out, err = self.release("--budget-ceiling", "3")
+            self.assertEqual(code, 0, err)
+            self.assertIn(f"Budget Spent:         {spent} of 3.0000\n", out)
+            self.assertIn(f"Budget Remaining:     {remaining}\n", out)
+
+    def test_report_names_the_busiest_day_of_the_window(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            for first_day, last_day, spent, remaining, day in (
+                    ("2026-09-15", "2026-09-20", "1.0000", "2.0000", "2026-09-15"),
+                    ("2026-09-01", "2026-09-30", "2.0000", "1.0000", "2026-09-15")):
+                code, out, err = TestPhilterApi.run_cli(self, "--philter-url", philter.url, "--from", first_day,
+                                                        "--to", last_day, "--budget-ceiling", "3", "--output", "out.csv")
+                self.assertEqual(code, 0, err)
+                self.assertIn(f"Budget Spent:         {spent} of 3.0000 on {day} (the busiest day from --from to --to)", out)
+                self.assertIn(f"Budget Remaining:     {remaining} on {day}", out)
+
+    def test_warns_when_a_release_leaves_the_source_past_the_default_share(self):
+        warning = "WARNING: claims has spent 5 of its budget ceiling of 5, past the warning share of 80%."
+        for run in range(1, 6):
+            code, out, err = self.release("--budget-ceiling", "5")
+            self.assertEqual(code, 0, err)
+            # 4 of 5 is at the share, not past it.
+            self.assertEqual(warning in err, run == 5, run)
+            self.assertNotIn("WARNING", out)
+
+    def test_the_warning_share_is_configurable(self):
+        for share, warned in (("0.5", True), ("1", False)):
+            with self.subTest(share=share):
+                if os.path.exists("privacy_budget.json"):
+                    os.remove("privacy_budget.json")
+                code, _, err = self.release("--budget-ceiling", "5", "--budget-warning-share", share, types="ssn,age")
+                self.assertEqual(code, 0, err)
+                code, _, err = self.release("--budget-ceiling", "5", "--budget-warning-share", share, types="ssn,age")
+                self.assertEqual(code, 0, err)
+                self.assertEqual("claims has spent 4 of its budget ceiling of 5, past the warning share of 50%" in err, warned)
+                self.assertEqual("WARNING: claims" in err, warned)
+        for share in ("1.5", "-0.1", "x"):
+            with self.subTest(share=share):
+                code, _, err = self.release("--budget-warning-share", share)
+                self.assertEqual(code, 2)
+                self.assertIn("--budget-warning-share", err)
+
+    def test_a_day_past_the_share_is_named(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            for first_day, last_day in (("2026-09-15", "2026-09-20"), ("2026-09-01", "2026-09-30")):
+                code, _, err = TestPhilterApi.run_cli(self, "--philter-url", philter.url, "--from", first_day,
+                                                      "--to", last_day, "--budget-ceiling", "2.4", "--output", "out.csv")
+                self.assertEqual(code, 0, err)
+        self.assertIn(f"WARNING: 2026-09-15 has spent 2 of its budget ceiling of 2.4 at pii_count_aggregates@{philter.url}, "
+                      f"past the warning share of 80%.", err)
+
+
+class TestReleaseLog(TempDirTestCase):
+    """Each release adds one entry to a log next to the budget, with no counts in it."""
+
+    LOG = "privacy_budget.releases.jsonl"
+
+    def log(self, path=LOG):
+        with open(path) as f:
+            return [json.loads(line) for line in f.read().splitlines()]
+
+    def test_each_release_appends_one_entry_without_counts(self):
+        self.write_counts({"ssn": 987654321, "age": 876543219})
+        measurement = MagicMock(return_value=[123456789, 234567891])
+        measurement.map.return_value = 0.5
+        with patch('main.dp.m.make_laplace', return_value=measurement):
+            for _ in range(2):
+                code, _, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn,age",
+                                             "--scale", "4", "--output", "out.csv")
+                self.assertEqual(code, 0, err)
+        entries = self.log()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertRegex(entry.pop("time"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+            self.assertEqual(entry, {"source": "claims", "epsilon": 0.5, "scale": 4.0, "pii_types": ["ssn", "age"]})
+        with open(self.LOG) as f:
+            log = f.read()
+        for count in ("987654321", "876543219", "123456789", "234567891"):
+            self.assertNotIn(count, log)
+
+    def test_a_release_through_philter_logs_its_window(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            code, _, err = TestPhilterApi.run_cli(self, "--philter-url", philter.url, "--from", "2026-09-01",
+                                                  "--to", "2026-09-30", "--output", "out.csv")
+            self.assertEqual(code, 0, err)
+        entry = self.log()[0]
+        del entry["time"]
+        self.assertEqual(entry, {"source": f"pii_count_aggregates@{philter.url}", "epsilon": 1.0, "scale": 2.0,
+                                 "pii_types": ["SSN", "PERSON"], "from": "2026-09-01", "to": "2026-09-30"})
+
+    def test_the_log_sits_next_to_the_budget_file(self):
+        os.mkdir("store")
+        self.write_counts({"ssn": 5})
+        code, _, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn",
+                                     "--budget-file", "store/budget.json", "--output", "out.csv")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(os.listdir("store")), ["budget.json", "budget.json.lock", "budget.releases.jsonl"])
+        self.assertEqual(len(self.log("store/budget.releases.jsonl")), 1)
+
+    def test_a_refused_release_adds_no_entry(self):
+        self.write_counts({"ssn": 5})
+        codes = [self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn", "--scale", "1",
+                               "--budget-ceiling", "2", "--output", "out.csv")[0] for _ in range(3)]
+        self.assertEqual(codes, [0, 0, 1])
+        self.assertEqual(len(self.log()), 2)
+
+    def test_concurrent_releases_lose_no_entries(self):
+        def release(_):
+            try:
+                PhilterDiffuse(collection_name="claims", budget_file="budget.json").privatize_counts(
+                    {"ssn": 5}, scale=1.0, budget_ceiling=5.0)
+                return True
+            except BudgetExceeded:
+                return False
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(release, range(32)))
+        self.assertEqual(sum(results), 5)
+        self.assertEqual(len(self.log("budget.releases.jsonl")), 5)
+
+    def test_a_crash_while_logging_leaves_the_log_readable(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        engine.privatize_counts({"ssn": 5}, scale=1.0)
+        with open("budget.releases.jsonl") as f:
+            log = f.read()
+        replace = os.replace
+        def fail_on_the_log(source, target):
+            if target.endswith(".releases.jsonl"):
+                raise OSError("disk full")
+            replace(source, target)
+        measurement = MagicMock()
+        measurement.map.return_value = 1.0
+        with patch('main.os.replace', side_effect=fail_on_the_log), \
+                patch('main.dp.m.make_laplace', return_value=measurement), self.assertRaises(OSError):
+            engine.privatize_counts({"ssn": 5}, scale=1.0)
+        with open("budget.releases.jsonl") as f:
+            self.assertEqual(f.read(), log)
+        self.assertEqual(sorted(os.listdir(".")), ["budget.json", "budget.json.lock", "budget.releases.jsonl"])
+        # The charge was written first, so the release is paid for but not logged, and it was never sampled.
+        self.assertEqual(engine._get_spent_epsilon(), 2.0)
+        measurement.assert_not_called()
+
+    def test_a_new_log_takes_the_access_of_the_budget_file(self):
+        engine = PhilterDiffuse(collection_name="claims", budget_file="budget.json")
+        engine._charge(1.0, 5.0)
+        os.chmod("budget.json", 0o640)
+        engine.privatize_counts({"ssn": 5}, scale=1.0)
+        self.assertEqual(os.stat("budget.releases.jsonl").st_mode & 0o777, 0o640)
+
+    @patch('main.MongoClient', mongomock.MongoClient)
+    def test_mongodb_logs_each_release_next_to_the_budget(self):
+        engine = PhilterDiffuse("mongodb://localhost:27017/log_db")
+        for _ in range(2):
+            engine.privatize_counts({"ssn": 5, "age": 7}, scale=2.0, budget_ceiling=2.5)
+            self.assertEqual(engine.spent_after_release, (engine._get_spent_epsilon(), None))
+        with self.assertRaises(BudgetExceeded):
+            engine.privatize_counts({"ssn": 5, "age": 7}, scale=2.0, budget_ceiling=2.5)
+        entries = list(engine.db[main.RELEASE_LOG_COLLECTION].find({}, {"_id": False}))
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            del entry["time"]
+            self.assertEqual(entry, {"source": "pii_counts", "epsilon": 1.0, "scale": 2.0, "pii_types": ["ssn", "age"]})
+
+def _scope_report(**extra):
+    """A Philter Scope report.json with the fields Philter Diffuse reads."""
+    report = {
+        "timestamp": "2026-11-20T10:00:00Z",
+        "total_documents": 27,
+        "entity_metrics": {"SSN": 1.0, "EMAIL_ADDRESS": 0.75},
+        "entity_stats": {"SSN": {"true_positives": 9, "false_positives": 1, "false_negatives": 0,
+                                 "precision": 0.9, "recall": 1.0}},
+        "policy": {"name": "default", "identifiers": {"ssn": {}}},
+    }
+    report.update(extra)
+    return report
+
+
+class TestAuditReportFile(TempDirTestCase):
+    """--report writes the audit report as JSON, and --evaluation adds a Philter Scope evaluation."""
+
+    run_cli = TestPhilterApi.run_cli
+
+    def write_evaluation(self, report=None, path="report.json"):
+        with open(path, "w") as f:
+            f.write(report if isinstance(report, str) else json.dumps(report or _scope_report()))
+        return path
+
+    def release(self, *argv):
+        self.write_counts({"ssn": 12, "email-address": 30})
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types",
+                             "ssn,email-address,person", "--output", "out.csv", "--scale", "3.0", *argv)
+
+    def read_report(self, path="audit.json"):
+        with open(path) as f:
+            return json.load(f)
+
+    def test_membership_risk_is_the_posterior_bound_from_even_odds(self):
+        self.assertEqual(main.membership_risk(0.0), 0.5)
+        self.assertAlmostEqual(main.membership_risk(math.log(3)), 0.75)
+        self.assertAlmostEqual(main.membership_risk(1.0), math.e / (1 + math.e))
+
+    def test_report_holds_the_release_budget_and_risk(self):
+        code, out, err = self.release("--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["epsilon"], 1.0)
+        self.assertEqual(report["source"], "claims")
+        self.assertIsNone(report["window"])
+        self.assertEqual(report["mechanism"], {"name": "Discrete Laplace", "scale": 3.0, "types": 3})
+        self.assertEqual(report["budget"], {"spent": 1.0, "ceiling": 10.0, "remaining": 9.0, "day": None})
+        self.assertAlmostEqual(report["risk"]["membership_risk"], main.membership_risk(1.0))
+        self.assertIsNone(report["evaluation"])
+        self.assertIn("Membership Risk:      73.1% at most", out)
+        self.assertIn("Audit report written to audit.json", out)
+
+    def test_report_file_never_holds_raw_counts(self):
+        self.write_counts({"ssn": 987654321})
+        measurement = MagicMock(return_value=[123456789])
+        measurement.map.return_value = 0.5
+        with patch('main.dp.m.make_laplace', return_value=measurement):
+            code, _, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn",
+                                         "--output", "out.csv", "--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        with open("audit.json") as f:
+            text = f.read()
+        self.assertIn("123456789", text)
+        self.assertNotIn("987654321", text)
+
+    def test_report_counts_match_the_csv(self):
+        code, _, err = self.release("--report", "audit.json", "--threshold", "5")
+        self.assertEqual(code, 0, err)
+        with open("out.csv", newline="") as f:
+            released = {row[0]: row[1] for row in list(csv.reader(f))[1:]}
+        counts = self.read_report()["counts"]
+        self.assertEqual(list(counts), ["ssn", "email-address", "person"])
+        for pii_type, count in counts.items():
+            self.assertEqual("None" if count is None else str(count), released[pii_type])
+
+    def test_a_second_release_reports_what_the_source_has_spent_in_total(self):
+        self.assertEqual(self.release()[0], 0)
+        code, out, err = self.release("--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["epsilon"], 1.0)
+        self.assertEqual(report["budget"]["spent"], 2.0)
+        self.assertAlmostEqual(report["risk"]["membership_risk"], main.membership_risk(2.0))
+
+    def test_a_window_reports_its_busiest_day(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            self.assertEqual(self.run_cli("--philter-url", philter.url, "--from", "2026-09-10", "--to", "2026-09-12",
+                                          "--output", "out.csv")[0], 0)
+            code, out, err = self.run_cli("--philter-url", philter.url, "--from", "2026-09-01", "--to", "2026-09-30",
+                                          "--output", "out.csv", "--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["window"], {"from": "2026-09-01", "to": "2026-09-30"})
+        self.assertEqual(report["budget"], {"spent": 2.0, "ceiling": 10.0, "remaining": 8.0, "day": "2026-09-10"})
+
+    def test_nothing_released_means_no_budget_in_the_report(self):
+        engine = PhilterDiffuse(collection_name="claims")
+        engine.privatize_counts({}, scale=1.0)
+        report = main.build_audit_report(engine, {}, 0.0, 1.0, 10.0)
+        self.assertIsNone(report["budget"])
+        self.assertIsNone(report["risk"])
+
+    def test_evaluation_gives_each_released_type_its_rates(self):
+        evaluation = main.load_evaluation(self.write_evaluation(), ["ssn", "email-address", "person"])
+        self.assertEqual(evaluation["types"], {
+            "ssn": {"evaluated": True, "recall": 1.0, "precision": 0.9},
+            "email-address": {"evaluated": True, "recall": 0.75, "precision": None},
+            "person": {"evaluated": False},
+        })
+        self.assertEqual((evaluation["types_evaluated"], evaluation["types_released"]), (2, 3))
+        self.assertAlmostEqual(evaluation["coverage"], 2 / 3)
+        self.assertEqual(evaluation["documents"], 27)
+        self.assertEqual(evaluation["evaluated_at"], "2026-11-20T10:00:00Z")
+
+    def test_policy_hash_does_not_depend_on_key_order_or_spacing(self):
+        first = main.load_evaluation(self.write_evaluation(_scope_report(policy={"a": 1, "b": [1, 2]})), ["ssn"])
+        second = main.load_evaluation(self.write_evaluation('{"policy": {"b": [1,2], "a": 1}, "entity_metrics": {}}'), ["ssn"])
+        self.assertEqual(first["policy_sha256"], second["policy_sha256"])
+        self.assertEqual(first["policy_sha256"], hashlib.sha256(b'{"a":1,"b":[1,2]}').hexdigest())
+        self.assertIsNone(main.load_evaluation(self.write_evaluation(_scope_report(policy=None)), ["ssn"])["policy_sha256"])
+
+    def test_report_and_printed_table_carry_the_evaluation(self):
+        self.write_evaluation()
+        code, out, err = self.release("--report", "audit.json", "--evaluation", "report.json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read_report()["evaluation"]["types"]["person"], {"evaluated": False})
+        self.assertIn("Policy Evaluation:    2 of 3 types, 27 labelled documents", out)
+        self.assertRegex(out, r"ssn\s+\|\s+\S+\s+\| 1.00")
+        self.assertRegex(out, r"person\s+\|\s+\S+\s+\| not evaluated")
+
+    def test_a_bad_evaluation_stops_the_run_before_any_budget_is_spent(self):
+        for name, report in (("not JSON", "{"),
+                             ("not a Philter Scope report", '{"total_documents": 3}'),
+                             ("recall out of range", json.dumps(_scope_report(entity_metrics={"SSN": 1.5}))),
+                             ("recall missing", json.dumps(_scope_report(entity_stats={"SSN": {"precision": 1.0}})))):
+            with self.subTest(name):
+                self.write_evaluation(report)
+                code, _, _ = self.release("--evaluation", "report.json", "--report", "audit.json")
+                self.assertEqual(code, 1)
+                self.assertFalse(os.path.exists("privacy_budget.json"))
+                self.assertFalse(os.path.exists("out.csv"))
+                self.assertFalse(os.path.exists("audit.json"))
 
 
 if __name__ == "__main__":

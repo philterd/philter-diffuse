@@ -66,6 +66,8 @@ PRIVACY AUDIT REPORT
 Privacy Loss (Epsilon): 2.5000
 Protection Strength:   MODERATE
 Influence Limit:      e^2.50 (12.18x)
+Budget Spent:         2.5000 of 10.0000
+Budget Remaining:     7.5000
 Output File:          privatized_counts.csv
 Count Threshold:      5
 ----------------------------------------
@@ -81,6 +83,7 @@ date            | None
 
 - **Privacy Loss (Epsilon)** is the budget spent by this query.
 - **Protection Strength** is a plain-language reading of epsilon (`MODERATE` here). Raise `--scale` for stronger protection: `--scale 10` spends `0.5` on these five types.
+- **Budget Spent** and **Budget Remaining** are what the `quickstart` source has spent and has left of the default ceiling of `10.0`.
 - The table shows the private counts, the same values as the CSV. The report never prints raw counts, so it is safe in logs.
 - `date` shows `None` because its privatized count fell below the threshold of 5.
 
@@ -103,17 +106,18 @@ This CSV is the artifact you can hand to analysts, auditors, or a downstream das
 
 ## 6. Watch the privacy budget
 
-Philter Diffuse remembers how much epsilon you have spent against each source. Run the same command again and look at the budget file it created:
+Philter Diffuse remembers how much epsilon you have spent against each source. Run the same command again, then check the budget:
 
 ```bash
-cat ~/.philter-diffuse/privacy_budget.json
+python main.py --budget-status
 ```
 
-```json
-{"quickstart": 5.0}
+```text
+Privacy budget in /home/user/.philter-diffuse/privacy_budget.json, against a ceiling of 10:
+quickstart: spent 5, remaining 5
 ```
 
-Two runs at `--scale 2.0` have spent `2.5 + 2.5 = 5.0`. The default ceiling is `10.0`; once cumulative epsilon would cross it, Philter Diffuse refuses the run: it exits with an error and writes no output. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
+Two runs at `--scale 2.0` have spent `2.5 + 2.5 = 5.0`. The default ceiling is `10.0`. A release that leaves the source past 80% of it prints a warning, and once cumulative epsilon would cross it, Philter Diffuse refuses the run: it exits with an error and writes no output. Each release is also logged, without counts, in `~/.philter-diffuse/privacy_budget.releases.jsonl`. See [Privacy Budget Management](privacy-budget.md) for how to manage and reset the budget.
 
 ## Next steps
 

@@ -1,6 +1,6 @@
 # Usage
 
-Philter Diffuse is a command-line tool designed to process PII counts and apply differential privacy. It reads counts from a MongoDB database, a local JSON file, or Philter's API. Each run names exactly one source: `--mongo-uri`, `--input`, or `--philter-url`.
+Philter Diffuse is a command-line tool designed to process PII counts and apply differential privacy. It reads counts from a MongoDB database, a local JSON file, or Philter's API. Each release names exactly one source: `--mongo-uri`, `--input`, or `--philter-url`. To see the privacy budget without releasing anything, see [Checking the budget](#checking-the-budget).
 
 ## Input Modes
 
@@ -56,18 +56,22 @@ The JSON file must be a flat object where keys represent the PII type and values
 | `--input` | Path to a local JSON file containing PII counts. | `None` |
 | `--source` | Required with `--input`. A name for the dataset the counts come from, which the privacy budget is tracked under. | `None` |
 | `--mongo-uri` | The connection string for your MongoDB instance. | `None` |
-| `--pii-types` | **[Required]** The PII types to release, comma-separated, such as `ssn,email-address`. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs `1 / scale` of epsilon. See [Choosing the PII types](#choosing-the-pii-types). | `None` |
+| `--pii-types` | **[Required for a release]** The PII types to release, comma-separated, such as `ssn,email-address`. Output has one row per type whether or not the source holds it, and types not listed are left out. Each type costs `1 / scale` of epsilon. See [Choosing the PII types](#choosing-the-pii-types). | `None` |
 | `--scale` | The **scale** parameter for the Laplace noise. A higher scale adds more noise (more privacy, less accuracy). | `2.0` |
-| `--output` | **[Required]** The file path where the privatized CSV results will be saved. | `None` |
+| `--output` | **[Required for a release]** The file path where the privatized CSV results will be saved. | `None` |
 | `--threshold` | Results with a privatized count below this value will be masked as `None` in the output. | `0` |
 | `--budget-ceiling` | The maximum cumulative privacy budget (epsilon) allowed for a single source, and with `--philter-url` for each UTC day. | `10.0` |
 | `--budget-file` | Where to keep the privacy budget, for sources other than MongoDB. | `PHILTER_DIFFUSE_BUDGET_FILE`, then `~/.philter-diffuse/privacy_budget.json` |
+| `--budget-warning-share` | Print a warning on standard error when a release leaves its source, or with `--philter-url` a day, past this share of `--budget-ceiling`, from 0 to 1. | `0.8` |
+| `--budget-status` | Print the epsilon spent and remaining for each source in the budget file, or with `--mongo-uri` in MongoDB, against `--budget-ceiling`, and exit. See [Checking the budget](#checking-the-budget). | off |
 | `--aggregates` | Read Philter's aggregated, document-presence PII counts instead of counting documents per field. With `--philter-url` they are read through Philter's API; otherwise from the `pii_count_aggregates` collection in MongoDB (deprecated). | off |
 | `--context` | When using `--aggregates`, restrict to Philter contexts of this name. Through Philter's API, contexts of that name belong to the API key's user unless Philter's `ADMIN_CROSS_USER_ACCESS_ENABLED` is on, when they include every user's. | all contexts |
 | `--philter-url` | Read the aggregates through Philter's API (Philter 4.0 or later) at this URL, such as `https://localhost:8080`. Implies `--aggregates`. The API key is read from the `PHILTER_API_KEY` environment variable. | `None` |
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | `None` |
 | `--from` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or later. The release is charged to the privacy budget of every day from `--from` to `--to`. | `None` |
 | `--to` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | `None` |
+| `--report` | Also write the audit report as JSON to this path, to keep with the CSV when a release is signed off. See [Audit Report](audit-report.md). | `None` |
+| `--evaluation` | A Philter Scope `report.json` for the policy that produced the counts. Its recall and precision for each type in `--pii-types` are added to the audit report. It does not change the noise or the budget. | `None` |
 | `--version` | Print the Philter Diffuse version and exit. | |
 
 Run `python main.py --help` to see this list from the tool itself. A flag that does not apply to the chosen source is refused with exit code `2` rather than ignored.
@@ -138,7 +142,7 @@ Restrict to one Philter context with `--context`. This path is **deprecated**: i
 
 ## Output Formats
 
-Philter Diffuse provides two forms of output for every execution:
+Philter Diffuse provides three forms of output for every release:
 
 ### 1. Privatized CSV File
 The file specified by the `--output` flag will contain a list of PII types and their corresponding privatized counts. For the JSON example above, run with `--threshold 60`:
@@ -165,7 +169,32 @@ A human-readable report is printed to the standard output (`stdout`) summarizing
 *   **Privacy Loss (Epsilon)**: The specific amount of privacy budget consumed by this particular execution (the number of PII types released divided by `--scale`).
 *   **Protection Strength**: A qualitative assessment of the privacy level (e.g., "HIGH" or "MODERATE").
 *   **Influence Limit**: A mathematical multiplier representing the maximum change one document can have on the output probability.
+*   **Budget Spent** and **Budget Remaining**: What the source has spent and has left against `--budget-ceiling` after this release. With `--philter-url`, they are for the day from `--from` to `--to` that has spent the most, which the report names.
+*   **Membership Risk**: The most sure an attacker can become that one document is in the counts, starting from even odds, after every release charged to that budget. See [Audit Report](audit-report.md).
+*   **Policy Evaluation**: With `--evaluation`, how many of the released types the evaluation covered, and a recall column in the table.
 *   **Private Counts Table**: The privatized count for each PII type, as written to the CSV. Raw counts are never printed, so the report can go to container or CI logs.
+
+`--report PATH` writes the same report as JSON. See [Audit Report](audit-report.md).
+
+A release that leaves its source, or a day, past `--budget-warning-share` of the ceiling (0.8 by default) also prints a warning on standard error.
+
+### 3. Release Log
+Each release adds one entry to a release log next to the budget, `privacy_budget.releases.jsonl` beside the budget file or the `privacy_releases` collection in MongoDB. An entry gives the time, the source, the epsilon, the scale, the declared types, and the window when there is one. It never holds a count. See [Release Log](privacy-budget.md#release-log).
+
+## Checking the budget
+
+`--budget-status` prints what each source has spent and has left, and exits:
+
+```bash
+python main.py --budget-status --budget-ceiling 10
+```
+
+```text
+Privacy budget in /home/user/.philter-diffuse/privacy_budget.json, against a ceiling of 10:
+claims-2026: spent 5, remaining 5
+```
+
+It reads the budget file, or the one named by `--budget-file`, or with `--mongo-uri` MongoDB's `privacy_metadata` collection. It needs no `--pii-types` or `--output`, reads no counts, makes no request to Philter, and changes nothing. Release flags such as `--input`, `--philter-url`, or `--scale` are refused with it. A Philter deployment is listed per UTC day; see [Checking the Budget](privacy-budget.md#checking-the-budget).
 
 ## Using the Output in BI Tools
 
