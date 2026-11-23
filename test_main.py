@@ -18,6 +18,7 @@ import hashlib
 import http.server
 import io
 import json
+import math
 import os
 import csv
 import shutil
@@ -1476,6 +1477,149 @@ class TestReleaseLog(TempDirTestCase):
         for entry in entries:
             del entry["time"]
             self.assertEqual(entry, {"source": "pii_counts", "epsilon": 1.0, "scale": 2.0, "pii_types": ["ssn", "age"]})
+
+def _scope_report(**extra):
+    """A Philter Scope report.json with the fields Philter Diffuse reads."""
+    report = {
+        "timestamp": "2026-11-20T10:00:00Z",
+        "total_documents": 27,
+        "entity_metrics": {"SSN": 1.0, "EMAIL_ADDRESS": 0.75},
+        "entity_stats": {"SSN": {"true_positives": 9, "false_positives": 1, "false_negatives": 0,
+                                 "precision": 0.9, "recall": 1.0}},
+        "policy": {"name": "default", "identifiers": {"ssn": {}}},
+    }
+    report.update(extra)
+    return report
+
+
+class TestAuditReportFile(TempDirTestCase):
+    """--report writes the audit report as JSON, and --evaluation adds a Philter Scope evaluation."""
+
+    run_cli = TestPhilterApi.run_cli
+
+    def write_evaluation(self, report=None, path="report.json"):
+        with open(path, "w") as f:
+            f.write(report if isinstance(report, str) else json.dumps(report or _scope_report()))
+        return path
+
+    def release(self, *argv):
+        self.write_counts({"ssn": 12, "email-address": 30})
+        return self.run_main("--input", "counts.json", "--source", "claims", "--pii-types",
+                             "ssn,email-address,person", "--output", "out.csv", "--scale", "3.0", *argv)
+
+    def read_report(self, path="audit.json"):
+        with open(path) as f:
+            return json.load(f)
+
+    def test_membership_risk_is_the_posterior_bound_from_even_odds(self):
+        self.assertEqual(main.membership_risk(0.0), 0.5)
+        self.assertAlmostEqual(main.membership_risk(math.log(3)), 0.75)
+        self.assertAlmostEqual(main.membership_risk(1.0), math.e / (1 + math.e))
+
+    def test_report_holds_the_release_budget_and_risk(self):
+        code, out, err = self.release("--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["epsilon"], 1.0)
+        self.assertEqual(report["source"], "claims")
+        self.assertIsNone(report["window"])
+        self.assertEqual(report["mechanism"], {"name": "Discrete Laplace", "scale": 3.0, "types": 3})
+        self.assertEqual(report["budget"], {"spent": 1.0, "ceiling": 10.0, "remaining": 9.0, "day": None})
+        self.assertAlmostEqual(report["risk"]["membership_risk"], main.membership_risk(1.0))
+        self.assertIsNone(report["evaluation"])
+        self.assertIn("Membership Risk:      73.1% at most", out)
+        self.assertIn("Audit report written to audit.json", out)
+
+    def test_report_file_never_holds_raw_counts(self):
+        self.write_counts({"ssn": 987654321})
+        measurement = MagicMock(return_value=[123456789])
+        measurement.map.return_value = 0.5
+        with patch('main.dp.m.make_laplace', return_value=measurement):
+            code, _, err = self.run_main("--input", "counts.json", "--source", "claims", "--pii-types", "ssn",
+                                         "--output", "out.csv", "--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        with open("audit.json") as f:
+            text = f.read()
+        self.assertIn("123456789", text)
+        self.assertNotIn("987654321", text)
+
+    def test_report_counts_match_the_csv(self):
+        code, _, err = self.release("--report", "audit.json", "--threshold", "5")
+        self.assertEqual(code, 0, err)
+        with open("out.csv", newline="") as f:
+            released = {row[0]: row[1] for row in list(csv.reader(f))[1:]}
+        counts = self.read_report()["counts"]
+        self.assertEqual(list(counts), ["ssn", "email-address", "person"])
+        for pii_type, count in counts.items():
+            self.assertEqual("None" if count is None else str(count), released[pii_type])
+
+    def test_a_second_release_reports_what_the_source_has_spent_in_total(self):
+        self.assertEqual(self.release()[0], 0)
+        code, out, err = self.release("--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["epsilon"], 1.0)
+        self.assertEqual(report["budget"]["spent"], 2.0)
+        self.assertAlmostEqual(report["risk"]["membership_risk"], main.membership_risk(2.0))
+
+    def test_a_window_reports_its_busiest_day(self):
+        with StubPhilter([_entry("claims", "2026-09-01", {"SSN": 4})]) as philter:
+            self.assertEqual(self.run_cli("--philter-url", philter.url, "--from", "2026-09-10", "--to", "2026-09-12",
+                                          "--output", "out.csv")[0], 0)
+            code, out, err = self.run_cli("--philter-url", philter.url, "--from", "2026-09-01", "--to", "2026-09-30",
+                                          "--output", "out.csv", "--report", "audit.json")
+        self.assertEqual(code, 0, err)
+        report = self.read_report()
+        self.assertEqual(report["window"], {"from": "2026-09-01", "to": "2026-09-30"})
+        self.assertEqual(report["budget"], {"spent": 2.0, "ceiling": 10.0, "remaining": 8.0, "day": "2026-09-10"})
+
+    def test_nothing_released_means_no_budget_in_the_report(self):
+        engine = PhilterDiffuse(collection_name="claims")
+        engine.privatize_counts({}, scale=1.0)
+        report = main.build_audit_report(engine, {}, 0.0, 1.0, 10.0)
+        self.assertIsNone(report["budget"])
+        self.assertIsNone(report["risk"])
+
+    def test_evaluation_gives_each_released_type_its_rates(self):
+        evaluation = main.load_evaluation(self.write_evaluation(), ["ssn", "email-address", "person"])
+        self.assertEqual(evaluation["types"], {
+            "ssn": {"evaluated": True, "recall": 1.0, "precision": 0.9},
+            "email-address": {"evaluated": True, "recall": 0.75, "precision": None},
+            "person": {"evaluated": False},
+        })
+        self.assertEqual((evaluation["types_evaluated"], evaluation["types_released"]), (2, 3))
+        self.assertAlmostEqual(evaluation["coverage"], 2 / 3)
+        self.assertEqual(evaluation["documents"], 27)
+        self.assertEqual(evaluation["evaluated_at"], "2026-11-20T10:00:00Z")
+
+    def test_policy_hash_does_not_depend_on_key_order_or_spacing(self):
+        first = main.load_evaluation(self.write_evaluation(_scope_report(policy={"a": 1, "b": [1, 2]})), ["ssn"])
+        second = main.load_evaluation(self.write_evaluation('{"policy": {"b": [1,2], "a": 1}, "entity_metrics": {}}'), ["ssn"])
+        self.assertEqual(first["policy_sha256"], second["policy_sha256"])
+        self.assertEqual(first["policy_sha256"], hashlib.sha256(b'{"a":1,"b":[1,2]}').hexdigest())
+        self.assertIsNone(main.load_evaluation(self.write_evaluation(_scope_report(policy=None)), ["ssn"])["policy_sha256"])
+
+    def test_report_and_printed_table_carry_the_evaluation(self):
+        self.write_evaluation()
+        code, out, err = self.release("--report", "audit.json", "--evaluation", "report.json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.read_report()["evaluation"]["types"]["person"], {"evaluated": False})
+        self.assertIn("Policy Evaluation:    2 of 3 types, 27 labelled documents", out)
+        self.assertRegex(out, r"ssn\s+\|\s+\S+\s+\| 1.00")
+        self.assertRegex(out, r"person\s+\|\s+\S+\s+\| not evaluated")
+
+    def test_a_bad_evaluation_stops_the_run_before_any_budget_is_spent(self):
+        for name, report in (("not JSON", "{"),
+                             ("not a Philter Scope report", '{"total_documents": 3}'),
+                             ("recall out of range", json.dumps(_scope_report(entity_metrics={"SSN": 1.5}))),
+                             ("recall missing", json.dumps(_scope_report(entity_stats={"SSN": {"precision": 1.0}})))):
+            with self.subTest(name):
+                self.write_evaluation(report)
+                code, _, _ = self.release("--evaluation", "report.json", "--report", "audit.json")
+                self.assertEqual(code, 1)
+                self.assertFalse(os.path.exists("privacy_budget.json"))
+                self.assertFalse(os.path.exists("out.csv"))
+                self.assertFalse(os.path.exists("audit.json"))
 
 
 if __name__ == "__main__":

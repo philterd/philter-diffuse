@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A release that leaves its source, or with `--philter-url` a day, past a share of `--budget-ceiling` prints a warning on standard error. The share is 0.8 unless `--budget-warning-share` sets another.
 - Each release adds one entry to a release log next to the budget: `privacy_budget.releases.jsonl` beside the budget file, or the `privacy_releases` collection in MongoDB. An entry gives the time, the source, the epsilon, the scale, the declared types, and the window when there is one, and never a count. It is written right after the charge, under the same lock, and a refused release adds none.
 
+### Audit report
+
+- `--report PATH` writes the audit report as JSON: epsilon, the scale and number of types, the budget spent with this release and what remains, a membership risk, the threshold, and the privatized counts that are in the CSV. Like standard output, it holds no raw counts. ([#7](https://github.com/philterd/philter-diffuse/issues/7))
+- The membership risk is `e^ε / (1 + e^ε)` for the epsilon the source, or with `--philter-url` the busiest day in the window, has spent: the most sure an attacker who started at even odds can become that one document is in the counts. The printed report shows it after the budget.
+- `--evaluation PATH` reads a Philter Scope `report.json` and adds when the evaluation ran, how many documents it scored, a SHA-256 of the policy it evaluated, and the recall and precision of each released type. A released type the evaluation didn't cover is marked as not evaluated. A file that isn't a Philter Scope report stops the run before any budget is spent.
+
 ## 0.1.0 - 2026-11-04
 
 Initial release.

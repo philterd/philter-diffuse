@@ -70,6 +70,8 @@ The JSON file must be a flat object where keys represent the PII type and values
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | `None` |
 | `--from` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or later. The release is charged to the privacy budget of every day from `--from` to `--to`. | `None` |
 | `--to` | Required with `--philter-url`. Read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | `None` |
+| `--report` | Also write the audit report as JSON to this path, to keep with the CSV when a release is signed off. See [Audit Report](audit-report.md). | `None` |
+| `--evaluation` | A Philter Scope `report.json` for the policy that produced the counts. Its recall and precision for each type in `--pii-types` are added to the audit report. It does not change the noise or the budget. | `None` |
 | `--version` | Print the Philter Diffuse version and exit. | |
 
 Run `python main.py --help` to see this list from the tool itself. A flag that does not apply to the chosen source is refused with exit code `2` rather than ignored.
@@ -168,7 +170,11 @@ A human-readable report is printed to the standard output (`stdout`) summarizing
 *   **Protection Strength**: A qualitative assessment of the privacy level (e.g., "HIGH" or "MODERATE").
 *   **Influence Limit**: A mathematical multiplier representing the maximum change one document can have on the output probability.
 *   **Budget Spent** and **Budget Remaining**: What the source has spent and has left against `--budget-ceiling` after this release. With `--philter-url`, they are for the day from `--from` to `--to` that has spent the most, which the report names.
+*   **Membership Risk**: The most sure an attacker can become that one document is in the counts, starting from even odds, after every release charged to that budget. See [Audit Report](audit-report.md).
+*   **Policy Evaluation**: With `--evaluation`, how many of the released types the evaluation covered, and a recall column in the table.
 *   **Private Counts Table**: The privatized count for each PII type, as written to the CSV. Raw counts are never printed, so the report can go to container or CI logs.
+
+`--report PATH` writes the same report as JSON. See [Audit Report](audit-report.md).
 
 A release that leaves its source, or a day, past `--budget-warning-share` of the ceiling (0.8 by default) also prints a warning on standard error.
 

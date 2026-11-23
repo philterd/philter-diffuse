@@ -97,6 +97,8 @@ Each release adds an entry to a release log next to the budget, `privacy_budget.
 | `--philter-ca-cert` | With `--philter-url`, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate. | Optional | None |
 | `--from` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or later. The release is charged to the privacy budget of every day from `--from` to `--to`. | With `--philter-url` | None |
 | `--to` | With `--philter-url`, read only counts for this UTC day (`YYYY-MM-DD`) or earlier. | With `--philter-url` | None |
+| `--report` | Also write the audit report as JSON to this path: epsilon, the budget spent, the membership risk, the privatized counts, and the policy evaluation. See [Audit Report](https://philterd.github.io/philter-diffuse/audit-report/). | Optional | None |
+| `--evaluation` | A Philter Scope `report.json` for the policy that produced the counts. Its recall and precision for each released type are added to the audit report. | Optional | None |
 
 ### Reading Philter's PII counts
 

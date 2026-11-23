@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import contextlib
+import hashlib
 import math
 import json
 import argparse
@@ -594,12 +595,13 @@ class PhilterDiffuse:
         return {k: max(0, v) for k, v in zip(keys, noisy)}, epsilon
 
     def generate_audit_report(self, private, epsilon, csv_file=None, threshold=0, spent=None,
-                              budget_ceiling=None, day=None):
+                              budget_ceiling=None, day=None, evaluation=None):
         """
         Prints the audit report for a release. It holds no raw counts: standard output ends up in
         logs, and exact counts there would undo the noise added to the release. With spent and
         budget_ceiling, it gives the budget spent and remaining after the release, on the given day
-        for a budget kept per day.
+        for a budget kept per day, and the membership risk for what was spent. With evaluation, what
+        load_evaluation read, it adds the policy's recall for each type.
         """
         print("\n" + "="*40)
         print("PRIVACY AUDIT REPORT")
@@ -612,21 +614,28 @@ class PhilterDiffuse:
             print(f"Budget Spent:         {spent:.4f} of {budget_ceiling:.4f}{on_day}"
                   + (" (the busiest day from --from to --to)" if day else ""))
             print(f"Budget Remaining:     {max(0.0, budget_ceiling - spent):.4f}{on_day}")
+            print(f"Membership Risk:      {membership_risk(spent):.1%} at most, from even odds{on_day}")
+        if evaluation:
+            print(f"Policy Evaluation:    {evaluation['types_evaluated']} of {evaluation['types_released']} types, "
+                  f"{evaluation['documents']} labelled documents")
         if csv_file:
             print(f"Output File:          {csv_file}")
         if threshold > 0:
             print(f"Count Threshold:      {threshold}")
         print("-" * 40)
-        print(f"{'PII Type':<15} | {'Private':<8}")
+        if evaluation:
+            print(f"{'PII Type':<15} | {'Private':<8} | Recall")
+        else:
+            print(f"{'PII Type':<15} | {'Private':<8}")
         print("-" * 40)
         for key in private:
-            # Ensure counts don't display as negative
-            safe_count = max(0, private[key])
-            
-            # Apply threshold
-            display_count = "None" if safe_count < threshold else safe_count
-            
-            print(f"{key:<15} | {display_count:<8}")
+            display_count = _displayed_count(private[key], threshold)
+            if evaluation:
+                measured = evaluation["types"][key]
+                recall = f"{measured['recall']:.2f}" if measured["evaluated"] else "not evaluated"
+                print(f"{key:<15} | {display_count:<8} | {recall}")
+            else:
+                print(f"{key:<15} | {display_count:<8}")
         
         if csv_file:
             print("-" * 40)
@@ -639,6 +648,135 @@ class PhilterDiffuse:
         if epsilon <= 1.0: return "HIGH"
         if epsilon <= 5.0: return "MODERATE"
         return "LOW (Testing Only)"
+
+def _released_count(count, threshold):
+    """A privatized count as it is released: never negative, and None below the threshold."""
+    count = max(0, count)
+    return None if count < threshold else count
+
+
+def _displayed_count(count, threshold):
+    released = _released_count(count, threshold)
+    return "None" if released is None else released
+
+
+def membership_risk(epsilon):
+    """
+    The most sure an attacker can become that one document is in the counts, if it was a coin toss
+    to them before they saw the releases that spent epsilon: e^epsilon / (1 + e^epsilon). It follows
+    from the bound differential privacy puts on how much one document changes the odds of any output.
+    """
+    return 1.0 / (1.0 + math.exp(-epsilon))
+
+
+def _entity_key(name):
+    # Philter Scope labels a type EMAIL_ADDRESS where Philter's counts say email-address.
+    return str(name).strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _rate(value, entity, field, file_path):
+    if value is None and field == "precision":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError(f"The {field} for {entity} in {file_path} must be a number from 0 to 1.")
+    return float(value)
+
+
+def load_evaluation(file_path, pii_types):
+    """
+    Reads a Philter Scope report.json and returns the evaluation section of the audit report: when the
+    evaluation ran, how many documents it scored, a hash of the policy it evaluated, and the recall and
+    precision of each type in pii_types. A type the evaluation has no entity for is marked as not
+    evaluated rather than left out. Raises ValueError if the file is not a Philter Scope report.
+    """
+    with open(file_path, encoding="utf-8") as f:
+        try:
+            report = json.load(f)
+        except ValueError:
+            raise ValueError(f"{file_path} is not valid JSON.") from None
+    stats = report.get("entity_stats") if isinstance(report, dict) else None
+    recalls = report.get("entity_metrics") if isinstance(report, dict) else None
+    if not isinstance(stats, dict) and not isinstance(recalls, dict):
+        raise ValueError(f"{file_path} is not a Philter Scope report: it has neither entity_stats nor entity_metrics.")
+
+    # entity_stats has both rates; reports written before it existed only have the recall.
+    measured = {}
+    for entity, recall in (recalls or {}).items():
+        measured[_entity_key(entity)] = {"recall": _rate(recall, entity, "recall", file_path), "precision": None}
+    for entity, stat in (stats or {}).items():
+        if not isinstance(stat, dict):
+            raise ValueError(f"The entity_stats entry for {entity} in {file_path} must be an object.")
+        measured[_entity_key(entity)] = {"recall": _rate(stat.get("recall"), entity, "recall", file_path),
+                                         "precision": _rate(stat.get("precision"), entity, "precision", file_path)}
+
+    types = {}
+    for pii_type in pii_types:
+        rates = measured.get(_entity_key(pii_type))
+        types[pii_type] = {"evaluated": True, **rates} if rates else {"evaluated": False}
+    evaluated = sum(1 for rates in types.values() if rates["evaluated"])
+
+    # Philter's counts don't say which policy produced them. The hash lets a reader compare the
+    # evaluated policy with the deployed one.
+    policy = report.get("policy")
+    policy_sha256 = None
+    if policy:
+        canonical = json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        policy_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    return {
+        "evaluated_at": report.get("timestamp"),
+        "documents": report.get("total_documents"),
+        "policy_sha256": policy_sha256,
+        "types_released": len(types),
+        "types_evaluated": evaluated,
+        "coverage": evaluated / len(types) if types else 0.0,
+        "types": types,
+    }
+
+
+AUDIT_REPORT_LIMITS = [
+    "Epsilon bounds what one document can change. A person who appears in several documents is protected less, in proportion.",
+    "membership_risk starts the attacker at even odds. One who already suspects a document is there ends up more sure, though the releases still change the odds by at most e^epsilon.",
+    "The evaluation measures the policy on a labelled sample, not on the documents in this release.",
+    "Philter's counts do not record which policy produced them. Compare policy_sha256 with a hash of the deployed policy.",
+]
+
+
+def build_audit_report(engine, private, epsilon, scale, budget_ceiling, threshold=0, window=None, evaluation=None):
+    """
+    Returns the audit report for a release as a dict for --report. Like the printed report it holds no
+    raw counts, only the privatized counts that are already in the CSV.
+    """
+    report = {
+        "tool": "Philter Diffuse",
+        "version": __version__,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source": engine.collection_name,
+        "window": {"from": window[0], "to": window[1]} if window else None,
+        "mechanism": {"name": "Discrete Laplace", "scale": scale, "types": len(private)},
+        "epsilon": epsilon,
+        "budget": None,
+        "risk": None,
+        "threshold": threshold,
+        "counts": {key: _released_count(value, threshold) for key, value in private.items()},
+        "evaluation": evaluation,
+        "limits": AUDIT_REPORT_LIMITS,
+    }
+    if engine.spent_after_release:
+        # With a window the busiest day is the bound: each document is recorded under one day, and
+        # every release that covers that day adds to what its documents have lost.
+        spent, day = engine.spent_after_release
+        report["budget"] = {"spent": spent, "ceiling": budget_ceiling, "remaining": max(0.0, budget_ceiling - spent),
+                            "day": day}
+        report["risk"] = {"epsilon": spent, "membership_risk": membership_risk(spent)}
+    return report
+
+
+def write_audit_report(report, file_path):
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+        f.write("\n")
+
 
 def restrict_to_declared_types(raw_counts, pii_types):
     """
@@ -738,6 +876,8 @@ def main(argv=None):
     parser.add_argument("--philter-ca-cert", type=str, default=None, metavar="PEM_FILE", help="With --philter-url, a PEM file holding a certificate to trust in addition to the system's certificate authorities, such as Philter's self-signed certificate.")
     parser.add_argument("--from", dest="date_from", type=_day, default=None, metavar="YYYY-MM-DD", help="Required with --philter-url. Read only counts for this UTC day or later. The release is charged to the privacy budget of every day from --from to --to.")
     parser.add_argument("--to", dest="date_to", type=_day, default=None, metavar="YYYY-MM-DD", help="Required with --philter-url. Read only counts for this UTC day or earlier.")
+    parser.add_argument("--report", type=str, default=None, metavar="PATH", help="Also write the audit report as JSON to this path: epsilon, the budget spent with this release, the membership risk, the privatized counts, and with --evaluation the policy's recall. Like standard output, it holds no raw counts.")
+    parser.add_argument("--evaluation", type=str, default=None, metavar="PATH", help="A Philter Scope report.json for the policy that produced the counts. Its recall and precision for each type in --pii-types are added to the audit report. It does not change the noise or the budget.")
 
     args = parser.parse_args(argv)
 
@@ -746,7 +886,8 @@ def main(argv=None):
                             ("--philter-ca-cert", args.philter_ca_cert), ("--pii-types", args.pii_types),
                             ("--output", args.output), ("--scale", args.scale), ("--threshold", args.threshold),
                             ("--budget-warning-share", args.budget_warning_share), ("--aggregates", args.aggregates),
-                            ("--context", args.context), ("--from", args.date_from), ("--to", args.date_to)):
+                            ("--context", args.context), ("--from", args.date_from), ("--to", args.date_to),
+                            ("--report", args.report), ("--evaluation", args.evaluation)):
             if value is not None and value is not False:
                 parser.error(f"--budget-status only reads the budget and cannot be used with {flag}.")
         if args.budget_file and args.mongo_uri:
@@ -842,6 +983,9 @@ def main(argv=None):
             # A count, not names: this output may be kept where the names would disclose something.
             print(f"WARNING: {left_out} PII type(s) in the source are not in --pii-types and were left out of this release.", file=sys.stderr)
 
+        # Read before anything is charged, so a bad file costs no budget.
+        evaluation = load_evaluation(args.evaluation, args.pii_types) if args.evaluation else None
+
         # 2. Privatize
         window = (args.date_from, args.date_to) if args.philter_url else None
         private_data, spent_epsilon = engine.privatize_counts(raw_data, scale=args.scale,
@@ -852,8 +996,14 @@ def main(argv=None):
         engine.write_counts_to_csv(private_data, args.output, threshold=args.threshold)
         
         # 4. Report
+        if args.report:
+            write_audit_report(build_audit_report(engine, private_data, spent_epsilon, args.scale, args.budget_ceiling,
+                                                  threshold=args.threshold, window=window, evaluation=evaluation),
+                               args.report)
         engine.generate_audit_report(private_data, spent_epsilon, csv_file=args.output, threshold=args.threshold,
-                                     spent=spent, budget_ceiling=args.budget_ceiling, day=day)
+                                     spent=spent, budget_ceiling=args.budget_ceiling, day=day, evaluation=evaluation)
+        if args.report:
+            print(f"Audit report written to {args.report}")
         if spent > args.budget_warning_share * args.budget_ceiling:
             spender = f"{day} has spent {spent:g} of its budget ceiling of {args.budget_ceiling:g} at {engine.collection_name}" \
                 if day else f"{engine.collection_name} has spent {spent:g} of its budget ceiling of {args.budget_ceiling:g}"
